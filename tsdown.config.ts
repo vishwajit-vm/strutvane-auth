@@ -9,6 +9,7 @@ export default defineConfig({
     hono: 'src/middleware/hono.ts',
     node: 'src/middleware/node.ts',
     testing: 'src/testing/index.ts',
+    provider: 'src/provider.ts',
   },
   format: 'esm',
   platform: 'node',

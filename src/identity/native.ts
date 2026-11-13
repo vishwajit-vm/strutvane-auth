@@ -71,6 +71,12 @@ export type ActorAttributes = (input: {
   readonly tenantId: string | undefined
 }) => Promise<Readonly<Record<string, unknown>>> | Readonly<Record<string, unknown>>
 
+/** Resolves the global (non-tenant) roles of a user. */
+export type GlobalRoles = (user: {
+  readonly userId: string
+  readonly email: string
+}) => readonly string[] | Promise<readonly string[]>
+
 /** Options for {@link createNativeEngine}. */
 export interface NativeEngineOptions {
   /** Public base URL, e.g. `https://app.example.com`. `https` makes cookies `Secure` and `__Host-`. */
@@ -89,6 +95,12 @@ export interface NativeEngineOptions {
   readonly onUnexpectedError?: ErrorReporter
   /** Extra actor attributes. `emailVerified` is always set. */
   readonly actorAttributes?: ActorAttributes
+  /**
+   * Roles for a user acting **outside** any tenant (apps without tenancy, platform admins).
+   * Default: none, so such actors hold no roles (deny-by-default). Tenant roles always come from
+   * membership and are never mixed with these.
+   */
+  readonly globalRoles?: GlobalRoles
   /** Clock (ms), for tests. */
   readonly now?: () => number
 }
@@ -205,6 +217,14 @@ export function createNativeEngine(options: NativeEngineOptions): IdentityEngine
     return { key, session }
   }
 
+  const globalRolesFor = async (userId: string): Promise<readonly string[]> => {
+    const user = users.get(userId)
+    if (!options.globalRoles || !user) return []
+    const roles = await options.globalRoles({ userId, email: user.email })
+    // Same role-name rule as tenant roles: a bad value fails closed instead of granting access.
+    return roles.filter((r) => ROLE.test(r))
+  }
+
   const actorFor = async (session: Session): Promise<Actor> => {
     // Re-read membership every time: a removed member loses the tenant immediately.
     const tenantId = session.activeTenantId
@@ -218,7 +238,7 @@ export function createNativeEngine(options: NativeEngineOptions): IdentityEngine
     return Object.freeze(
       activeTenant && roles
         ? { ...base, tenantId: activeTenant, roles: Object.freeze([...roles]) }
-        : { ...base, roles: Object.freeze([]) },
+        : { ...base, roles: Object.freeze([...(await globalRolesFor(session.userId))]) },
     )
   }
 

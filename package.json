@@ -55,6 +55,10 @@
       "types": "./dist/testing.d.mts",
       "default": "./dist/testing.mjs"
     },
+    "./provider": {
+      "types": "./dist/provider.d.mts",
+      "default": "./dist/provider.mjs"
+    },
     "./package.json": "./package.json"
   },
   "files": [

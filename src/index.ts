@@ -56,6 +56,7 @@ export {
   type ActorAttributes,
   createNativeEngine,
   DEFAULT_RATE_LIMITS,
+  type GlobalRoles,
   type IdentityRateLimits,
   type NativeEngineOptions,
 } from './identity/native.ts'

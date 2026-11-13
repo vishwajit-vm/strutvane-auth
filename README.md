@@ -109,6 +109,28 @@ app.get('/me', (c) => c.json(c.get('actor')))
 
 Every engine implements `IdentityEngine` and returns results, never throws: stable error codes, cookies as headers, and `authenticate(request) → { actor, headers }` that fails closed. The **native engine** (`createNativeEngine`) is in-memory and meant for development and tests.
 
+## In a Strutvane app
+
+`create-strutvane` registers `@strutvane/auth/provider` in `strutvane.config.ts`. It plugs into the app only
+through core (container token + hooks), never by importing the framework:
+
+- **Permissions:** loads `app/policies/*.policy.ts` at boot and binds `PermissionProviderToken`
+  (deny-by-default). A policy gets its schema from the model:
+  `definePolicy('invoice', { schema: policySchema(Invoice) }, ({ allow }) => { … })`
+  (`policySchema` comes from `@strutvane/framework`).
+- **Identity:** an `http.onRequest` hook (`auth.identity`) resolves the actor (and, with
+  `config/tenancy.ts` `enabled: true`, the tenant: session first, then a member-checked `X-Tenant-Id`).
+- **Endpoints** under the API base path: `POST /auth/sign-up` (unless `registration: false`),
+  `POST /auth/sign-in`, `POST /auth/sign-out`, `GET /auth/me`. Bodies are capped at 16 KiB;
+  failures are RFC 9457 problems.
+- **Roles outside tenants:** the `seedAdmin` account from `config/auth.ts` is created at boot with
+  `seedAdmin.role`; self-registered users get `defaultRoles` (none unless configured). Engines can
+  supply them through the new `globalRoles` option of `createNativeEngine`.
+
+The provider uses the native engine: accounts and sessions live in memory and are lost on restart,
+so it is for development and tests. Persistent identity (Better Auth on Postgres) is wired by hand
+for now (`@strutvane/auth/better-auth`).
+
 ## Security notes
 
 - **Deny by default, deny wins, fail closed.** No matching rule denies. A record missing a field the policy needs throws instead of guessing. Without a record, record-dependent actions are denied (`record-required:<rule>`).
@@ -124,7 +146,7 @@ Every engine implements `IdentityEngine` and returns results, never throws: stab
 
 These parts of the [package spec](https://github.com/vishwajit-vm/strutvane/blob/main/docs/07-package-auth.md) come in later phases:
 
-- The ready-made auth HTTP API (`/api/v1/auth/*`), screens and the `sv add auth` installer; CLI commands (`sv auth:*`, `sv tenant:*`, `sv audit:*`).
+- A persistent identity engine in the app provider (it uses the in-memory native engine), password-reset and tenant endpoints, screens and the `sv add auth` installer; CLI commands (`sv auth:*`, `sv tenant:*`, `sv audit:*`).
 - OIDC/SAML SSO, SCIM, MFA (TOTP, passkeys), magic links, social login, API keys and service-account tokens, JWT refresh rotation.
 - Schema-per-tenant and database-per-tenant strategies (only `shared` + RLS is implemented); custom DB-stored roles, teams and record-scoped assignments.
 - A Postgres audit sink with a transactional outbox and hash chain (the `AuditSink` interface and an in-memory sink exist).
