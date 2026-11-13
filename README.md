@@ -4,7 +4,7 @@
 
 **Enterprise authentication and authorization for TypeScript apps: identity adapters, RBAC/ABAC compiled to SQL, multi-tenancy with row-level security, audit logs, SSO/SCIM, plus ready-made auth API and screens.**
 
-[![Status: planning](https://img.shields.io/badge/status-planning-blueviolet)](https://github.com/vishwajit-vm/strutvane/blob/main/docs/14-roadmap.md)
+[![Status: 0.1.0-next](https://img.shields.io/badge/status-0.1.0--next-orange)](https://github.com/vishwajit-vm/strutvane/blob/main/docs/14-roadmap.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178c6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![Part of Strutvane](https://img.shields.io/badge/ecosystem-Strutvane-1f3a5f)](https://github.com/vishwajit-vm/strutvane)
@@ -12,49 +12,158 @@
 </div>
 
 > [!NOTE]
-> **Strutvane Auth is in the design phase.** The specification is written and implementation has not started. Nothing is published to npm yet, and the package name `@strutvane/auth` is reserved for this project. Follow [the roadmap](https://github.com/vishwajit-vm/strutvane/blob/main/docs/14-roadmap.md) for progress.
+> **Status: `0.1.0-next.0`, the authorization, tenancy, identity and audit core is implemented and tested, but not yet released to npm.** It follows [ADR-0007](https://github.com/vishwajit-vm/strutvane/blob/main/docs/adr/0007-tenancy-rls-enforcement-rules.md) (tenancy), [ADR-0008](https://github.com/vishwajit-vm/strutvane/blob/main/docs/adr/0008-policy-predicates-two-valued-semantics.md) (policy semantics) and [ADR-0013](https://github.com/vishwajit-vm/strutvane/blob/main/docs/adr/0013-better-auth-hardened-adapter.md) (Better Auth). The API may still change before `0.1.0`. See [what's not built yet](#not-built-yet).
 
 ## What it is
 
-Strutvane Auth is part of **[Strutvane](https://github.com/vishwajit-vm/strutvane)**, a TypeScript framework and package ecosystem for building enterprise B2B applications. You declare models as fields and types, and get migrations, a secured CRUD API, auth/RBAC/tenancy and a complete UI. Every line stays owned, overridable TypeScript.
+Strutvane Auth is part of **[Strutvane](https://github.com/vishwajit-vm/strutvane)**, a TypeScript framework and package ecosystem for building enterprise B2B applications. It works **standalone** in any Node app, or **integrated** with `@strutvane/framework`, which talks to it only through the contracts `PermissionProvider` (so the two never import each other).
 
-## Planned capabilities
+It depends only on [`@strutvane/core`](https://github.com/vishwajit-vm/strutvane-core) and [`@strutvane/contracts`](https://github.com/vishwajit-vm/strutvane-contracts). Better Auth, Hono, `pg` and Vitest are optional peers, used only by the subpaths that need them.
 
-- **Identity** through adapters: Better Auth by default, OIDC/SAML enterprise IdPs (Entra ID, Okta, Keycloak), and an optional native engine
-- Email/password, magic links, social login, **MFA** (TOTP, passkeys), sessions, JWT with refresh rotation, API keys, service accounts
-- **Authorization**: roles, permissions and policies with conditions that **compile to SQL filters**, field-level rules, explainable decisions
-- **Multi-tenancy**: shared schema with Postgres RLS, schema-per-tenant or database-per-tenant, plus a tenant resolver chain
-- **Audit log**: transactional outbox, redaction, optional hash-chain tamper evidence
-- Works **standalone** in Hono, Express, Fastify, NestJS and Next.js apps, or **integrated** with `@strutvane/framework` and `@strutvane/ui`
+## What's inside
 
-## A taste of the API (design preview)
+| Entry point | What you get |
+|---|---|
+| `@strutvane/auth` | `definePolicy` (typed predicate builder, allow/deny, deny wins, deny by default, field rules, `explain()`), `createPermissionProvider`, the tenant resolver chain, `recordAudit`, the native identity engine, rate limiting and the framework-agnostic middleware core. |
+| `@strutvane/auth/sql` | `compileToSql`: a policy or UI filter → a parameterised, two-valued, NULL-safe Postgres `WHERE` fragment. |
+| `@strutvane/auth/postgres` | `withTenant`, RESTRICTIVE row-level-security and role migration SQL, `tenancyAudit`, the `findSessionSet` lint, and a shared Postgres rate-limit store. |
+| `@strutvane/auth/better-auth` | The hardened Better Auth adapter (needs `better-auth` and `pg`). |
+| `@strutvane/auth/hono`, `@strutvane/auth/node` | Auth middleware for Hono, and for `node:http` / Express (connect-style). |
+| `@strutvane/auth/testing` | The identity-engine contract suite (run it against any adapter) and test helpers. |
+
+## Quick start: policies that compile to SQL
 
 ```ts
-import { definePolicy } from '@strutvane/auth'
+import { createPermissionProvider, definePolicy, defineSchema } from '@strutvane/auth'
+import { compileToSql } from '@strutvane/auth/sql'
 
-export default definePolicy('invoice', ({ allow, deny, field }) => {
-  allow('read',    { role: ['accountant', 'manager'] })
-  allow('read',    { when: ({ actor, row }) => row.ownerId.eq(actor.id) }) // compiles to SQL
-  allow('approve', { role: 'manager', when: ({ row }) => row.amount.lte(10_000) })
-  deny('delete',   { when: ({ row }) => row.status.eq('paid') })           // deny wins
-  field('internalNotes').readable({ role: ['manager'] })
+const invoice = defineSchema({
+  table: 'invoices',
+  columns: {
+    ownerId: { column: 'owner_id', type: 'uuid' },
+    amount: { column: 'amount', type: 'int4' },
+    status: { column: 'status', type: 'text' },
+    internalNotes: { column: 'internal_notes', type: 'text' },
+  },
 })
 
-// pnpm sv add auth → config, migrations, /api/v1/auth/*, login/register/MFA screens, roles, admin seed
+export const invoicePolicy = definePolicy('invoice', { schema: invoice }, ({ allow, deny, field }) => {
+  allow(['viewAny', 'view'], { role: ['accountant', 'manager'] })
+  allow(['view', 'update'], { when: ({ actor, row }) => row.ownerId.eq(actor.id) }) // compiles to SQL
+  allow('approve', { role: 'manager', when: ({ row }) => row.amount.lte(10_000) })
+  deny('delete', { when: ({ row }) => row.status.eq('paid'), name: 'paid-is-final' }) // deny wins
+  field('internalNotes').readable({ role: 'manager' })
+})
+
+const permissions = createPermissionProvider([invoicePolicy]) // register under PermissionProviderToken
+
+// One record, in memory:
+await permissions.can(actor, 'invoice.update', { type: 'invoice', record })
+// → { allowed: true, reason: 'allow:view|update:signed-in+when' }
+
+// A list, in SQL (pagination counts stay correct; nothing is filtered after the fact):
+const filter = await permissions.filterFor(actor, 'invoice.view', 'invoice')
+const where = compileToSql(filter, invoice, { alias: 'i' })
+await pool.query(`SELECT * FROM invoices i WHERE ${where.sql} LIMIT 50`, where.params)
 ```
+
+`row.amout` or `row.amount.eq('x')` don't compile, and every condition is validated against the schema when the policy is defined, so mistakes surface at boot. The in-memory check and the SQL select exactly the same rows: property-based tests compare them against real Postgres.
+
+## Tenancy with row-level security
+
+```ts
+import { tenantRlsSql, withTenant } from '@strutvane/auth/postgres'
+
+// In a migration: ENABLE + FORCE RLS and a RESTRICTIVE policy with USING and WITH CHECK.
+const { up } = tenantRlsSql({ table: 'app.invoices', runtimeRole: 'app_user' })
+
+// At runtime: one transaction, tenant set with set_config(…, true), never leaked by the pool.
+const rows = await withTenant(pool, tenantId, async (client) => (await client.query('SELECT * FROM app.invoices')).rows)
+```
+
+Tenants are resolved per request by a chain: `subdomainResolver`, `pathResolver`, `headerResolver` (only for callers you trust) and `sessionResolver`. The middleware refuses a request for a tenant the actor isn't a member of with 403, and Postgres RLS enforces the boundary in the database. Run `tenancyAudit(pool)` in CI or `sv doctor`: it flags tables without RLS, permissive-only policies, runtime roles that bypass RLS or own tables, definer views and `SECURITY DEFINER` functions.
+
+## Identity and middleware
+
+```ts
+import { Hono } from 'hono'
+import { sessionResolver } from '@strutvane/auth'
+import { createBetterAuthEngine } from '@strutvane/auth/better-auth'
+import { type AuthVariables, authMiddleware } from '@strutvane/auth/hono'
+import { postgresRateLimitStore } from '@strutvane/auth/postgres'
+
+const engine = createBetterAuthEngine({
+  pool,
+  baseURL: 'https://app.example.com',
+  secret: env.AUTH_SECRET, // ≥ 32 random characters, from your secret store
+  rateLimitStore: postgresRateLimitStore(pool), // shared by every process
+  trustedProxies: ['10.0.0.0/8'], // X-Forwarded-For is honoured only from these
+  deliverPasswordReset: ({ email, token }) => mailer.sendReset(email, token),
+  onUnexpectedError: (context, error) => logger.error(context, { err: error }),
+})
+
+const app = new Hono<{ Variables: AuthVariables }>()
+app.use(authMiddleware({ engine, tenancy: { resolvers: [sessionResolver()] } }))
+app.get('/me', (c) => c.json(c.get('actor')))
+```
+
+Every engine implements `IdentityEngine` and returns results, never throws: stable error codes, cookies as headers, and `authenticate(request) → { actor, headers }` that fails closed. The **native engine** (`createNativeEngine`) is in-memory and meant for development and tests.
+
+## Security notes
+
+- **Deny by default, deny wins, fail closed.** No matching rule denies. A record missing a field the policy needs throws instead of guessing. Without a record, record-dependent actions are denied (`record-required:<rule>`).
+- **NULL-safe, two-valued semantics (ADR-0008).** `ne` matches rows with no value, so `deny … when status ne 'draft'` also protects rows without a status. A null actor attribute never matches null rows.
+- **No value ever reaches SQL text.** Values are typed parameters, identifiers come only from the schema and are pattern-checked, and text search never uses `LIKE`.
+- **Untrusted filters are bounded**: node count, depth, list length and string length are capped before any work is done.
+- **Rate limits can't be bypassed with a forged `X-Forwarded-For`.** The client IP comes from the socket peer and only trusted proxies are believed. Sign-in is limited per IP and per account; requests without a known IP never share one bucket.
+- **Sessions:** a new session on every sign-in (no fixation), server-side revocation, all sessions revoked on password reset, constant-time reset start (no user enumeration), `HttpOnly; SameSite=Lax` cookies that are `Secure` on https.
+- **Audit records redact** passwords, tokens and secrets (plus any fields you name), keeping only the fact that they changed.
+- Attack-style tests (IDOR, role tampering, cross-tenant CRUD, header spoofing, SQL injection, session fixation, hostile filters) run on every CI build. See [`test/vapt.test.ts`](test/vapt.test.ts).
+
+## Not built yet
+
+These parts of the [package spec](https://github.com/vishwajit-vm/strutvane/blob/main/docs/07-package-auth.md) come in later phases:
+
+- The ready-made auth HTTP API (`/api/v1/auth/*`), screens and the `sv add auth` installer; CLI commands (`sv auth:*`, `sv tenant:*`, `sv audit:*`).
+- OIDC/SAML SSO, SCIM, MFA (TOTP, passkeys), magic links, social login, API keys and service-account tokens, JWT refresh rotation.
+- Schema-per-tenant and database-per-tenant strategies (only `shared` + RLS is implemented); custom DB-stored roles, teams and record-scoped assignments.
+- A Postgres audit sink with a transactional outbox and hash chain (the `AuditSink` interface and an in-memory sink exist).
+- Express-specific, Fastify and NestJS adapters (Express already works with the connect-style `@strutvane/auth/node` middleware).
+- Generating RBAC/ABAC policies as Postgres permissive RLS policies (today: `filterFor` + `compileToSql` in the query, plus the tenant RLS boundary).
 
 ## Installation (once released)
 
 ```bash
-pnpm sv add auth   # or, in any Node app: npx strutvane add auth
+npm i @strutvane/auth
+# optional, per feature: better-auth pg hono
 ```
+
+## Development
+
+```bash
+corepack pnpm@12.18.0 install
+corepack pnpm@12.18.0 run ci                # lint → typecheck → unit, property, PGlite and type tests + coverage → build
+corepack pnpm@12.18.0 run test:integration  # real PostgreSQL 18 in a throwaway Docker container
+```
+
+| Script | What it does |
+|---|---|
+| `lint` / `format` | Biome check / auto-fix |
+| `typecheck` | `tsc --noEmit` with the strictest settings |
+| `test` / `test:coverage` | Vitest: unit, fast-check property tests, Postgres-equivalence and RLS tests on [PGlite](https://pglite.dev) (in-process Postgres), the identity contract on the native engine, VAPT tests and type-level tests. Coverage thresholds: 90/90/85/90. |
+| `test:integration` | Starts `postgres:18.7-alpine` with `docker run --rm` (removed afterwards, no Docker files written) and runs pooling/leak/bypass tests and the Better Auth contract + tripwires. |
+| `build` | tsdown → one `dist/<entry>.mjs` + `.d.mts` per entry point |
+
+Until `@strutvane/contracts` and `@strutvane/core` are published, local development links them from `../contracts` and `../core` through a temporary `overrides` entry in `pnpm-workspace.yaml`. That entry must not be committed (the CI `check-deps` guard rejects it).
+
+Shared configs (`tsconfig.base.json`, `biome.base.json`, `vitest.shared.ts`, CI workflows) are synced from [strutvane-tooling](https://github.com/vishwajit-vm/strutvane-tooling). Don't edit them here.
 
 ## Works alone, better together
 
 | Package | Role |
 |---------|------|
 | [`@strutvane/framework`](https://github.com/vishwajit-vm/strutvane-framework) | Backend & database core |
-| [`@strutvane/auth`](https://github.com/vishwajit-vm/strutvane-auth) | Authentication, authorization, tenancy, audit |
+| [`@strutvane/auth`](https://github.com/vishwajit-vm/strutvane-auth) | Authentication, authorization, tenancy, audit (this repo) |
 | [`@strutvane/ui`](https://github.com/vishwajit-vm/strutvane-ui) | Metadata-driven frontend |
 | [`@strutvane/core`](https://github.com/vishwajit-vm/strutvane-core) | Kernel: container, providers, config, context |
 | [`@strutvane/contracts`](https://github.com/vishwajit-vm/strutvane-contracts) | Shared types and wire protocols |
@@ -66,11 +175,12 @@ pnpm sv add auth   # or, in any Node app: npx strutvane add auth
 ## Documentation
 
 - **Package specification:** [07-package-auth.md](https://github.com/vishwajit-vm/strutvane/blob/main/docs/07-package-auth.md)
-- **Ecosystem blueprint:** [strutvane/docs](https://github.com/vishwajit-vm/strutvane/tree/main/docs), starting with the [executive summary](https://github.com/vishwajit-vm/strutvane/blob/main/docs/00-executive-summary.md) and the [developer experience](https://github.com/vishwajit-vm/strutvane/blob/main/docs/05-developer-experience.md)
+- **Decisions:** [ADR-0007](https://github.com/vishwajit-vm/strutvane/blob/main/docs/adr/0007-tenancy-rls-enforcement-rules.md) (tenancy), [ADR-0008](https://github.com/vishwajit-vm/strutvane/blob/main/docs/adr/0008-policy-predicates-two-valued-semantics.md) (policy semantics), [ADR-0013](https://github.com/vishwajit-vm/strutvane/blob/main/docs/adr/0013-better-auth-hardened-adapter.md) (Better Auth)
+- **Ecosystem blueprint:** [strutvane/docs](https://github.com/vishwajit-vm/strutvane/tree/main/docs), starting with the [executive summary](https://github.com/vishwajit-vm/strutvane/blob/main/docs/00-executive-summary.md)
 
 ## Contributing
 
-Ideas and design feedback are welcome while the project is in the design phase. Open an issue or discussion, and see [CONTRIBUTING.md](CONTRIBUTING.md).
+Issues, ideas and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md). Public API changes need an RFC, tests, docs and a changeset.
 
 ## Security
 

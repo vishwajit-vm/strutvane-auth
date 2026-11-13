@@ -1,0 +1,125 @@
+{
+  "name": "@strutvane/auth",
+  "version": "0.1.0-next.0",
+  "description": "Enterprise authentication and authorization for TypeScript apps: policies compiled to SQL, multi-tenancy with Postgres RLS, hardened identity adapters, audit events and framework-agnostic middleware.",
+  "keywords": [
+    "strutvane",
+    "typescript",
+    "authentication",
+    "authorization",
+    "rbac",
+    "abac",
+    "multi-tenancy",
+    "row-level-security",
+    "audit-log",
+    "better-auth"
+  ],
+  "homepage": "https://github.com/vishwajit-vm/strutvane-auth#readme",
+  "bugs": {
+    "url": "https://github.com/vishwajit-vm/strutvane-auth/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vishwajit-vm/strutvane-auth.git"
+  },
+  "license": "MIT",
+  "author": "The Strutvane Authors",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.mts",
+      "default": "./dist/index.mjs"
+    },
+    "./sql": {
+      "types": "./dist/sql.d.mts",
+      "default": "./dist/sql.mjs"
+    },
+    "./postgres": {
+      "types": "./dist/postgres.d.mts",
+      "default": "./dist/postgres.mjs"
+    },
+    "./better-auth": {
+      "types": "./dist/better-auth.d.mts",
+      "default": "./dist/better-auth.mjs"
+    },
+    "./hono": {
+      "types": "./dist/hono.d.mts",
+      "default": "./dist/hono.mjs"
+    },
+    "./node": {
+      "types": "./dist/node.d.mts",
+      "default": "./dist/node.mjs"
+    },
+    "./testing": {
+      "types": "./dist/testing.d.mts",
+      "default": "./dist/testing.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "packageManager": "pnpm@12.18.0",
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "scripts": {
+    "lint": "biome check .",
+    "format": "biome check --write .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "build": "tsdown",
+    "ci": "biome check . && tsc --noEmit && vitest run --coverage && tsdown",
+    "changeset": "changeset",
+    "version-packages": "changeset version",
+    "release": "changeset publish"
+  },
+  "dependencies": {
+    "@strutvane/contracts": "0.1.0-next.0",
+    "@strutvane/core": "0.1.0-next.0"
+  },
+  "peerDependencies": {
+    "better-auth": "1.7.23",
+    "hono": "^4.13.0",
+    "pg": "^8.23.0",
+    "vitest": "^5.1.0"
+  },
+  "peerDependenciesMeta": {
+    "better-auth": {
+      "optional": true
+    },
+    "hono": {
+      "optional": true
+    },
+    "pg": {
+      "optional": true
+    },
+    "vitest": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.6.7",
+    "@changesets/cli": "3.0.3",
+    "@electric-sql/pglite": "0.5.16",
+    "@types/node": "24.19.2",
+    "@types/pg": "8.23.1",
+    "@vitest/coverage-v8": "5.1.0",
+    "better-auth": "1.7.23",
+    "fast-check": "4.10.2",
+    "hono": "4.13.18",
+    "pg": "8.23.1",
+    "tsdown": "0.23.7",
+    "typescript": "6.0.3",
+    "vitest": "5.1.0"
+  }
+}
