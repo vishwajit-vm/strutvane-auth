@@ -7,7 +7,8 @@
  * - on `http.onRequest` (handler `auth.identity`), resolves the actor (and tenant, with
  *   tenancy on) for every request, and answers the auth endpoints itself:
  *   `POST {api}/auth/sign-up`, `POST {api}/auth/sign-in`, `POST {api}/auth/sign-out`,
- *   `GET {api}/auth/me`.
+ *   `GET {api}/auth/me`, and for tenancy `POST|GET {api}/auth/tenants` and
+ *   `POST {api}/auth/switch-tenant` (members only; the creator becomes `owner`).
  *
  * Identity uses the native engine (in memory, single process): accounts and sessions are lost on
  * restart, so it is for development and tests. On boot it creates the `seedAdmin` account from
@@ -228,6 +229,32 @@ export function createAuthProvider(): Provider {
                   const body = await readJson(p.request)
                   const input = { email: text(body['email']), password: text(body['password']) }
                   return answer(toResponse(await native.signIn(input, p.request)))
+                }
+                case 'POST /tenants': {
+                  const body = await readJson(p.request)
+                  const input = { name: text(body['name']), slug: text(body['slug']) }
+                  const result = await native.createTenant(input, p.request)
+                  return answer(
+                    result.ok
+                      ? json(result.value, 201, result.headers)
+                      : toResponse({ ...result, ok: false }),
+                  )
+                }
+                case 'GET /tenants': {
+                  const result = await native.listTenants(p.request)
+                  return answer(
+                    result.ok
+                      ? json({ data: result.value }, 200, result.headers)
+                      : toResponse({ ...result, ok: false }),
+                  )
+                }
+                case 'POST /switch-tenant': {
+                  const body = await readJson(p.request)
+                  return answer(
+                    toResponse(
+                      await native.switchTenant({ tenantId: text(body['tenantId']) }, p.request),
+                    ),
+                  )
                 }
                 case 'POST /sign-out':
                   return answer(toResponse(await native.signOut(p.request)))

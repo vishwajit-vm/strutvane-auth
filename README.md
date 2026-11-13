@@ -121,7 +121,8 @@ through core (container token + hooks), never by importing the framework:
 - **Identity:** an `http.onRequest` hook (`auth.identity`) resolves the actor (and, with
   `config/tenancy.ts` `enabled: true`, the tenant: session first, then a member-checked `X-Tenant-Id`).
 - **Endpoints** under the API base path: `POST /auth/sign-up` (unless `registration: false`),
-  `POST /auth/sign-in`, `POST /auth/sign-out`, `GET /auth/me`. Bodies are capped at 16 KiB;
+  `POST /auth/sign-in`, `POST /auth/sign-out`, `GET /auth/me`, and for tenancy `POST|GET /auth/tenants`
+  and `POST /auth/switch-tenant` (members only; the creator becomes `owner`). Bodies are capped at 16 KiB;
   failures are RFC 9457 problems.
 - **Roles outside tenants:** the `seedAdmin` account from `config/auth.ts` is created at boot with
   `seedAdmin.role`; self-registered users get `defaultRoles` (none unless configured). Engines can
@@ -146,7 +147,7 @@ for now (`@strutvane/auth/better-auth`).
 
 These parts of the [package spec](https://github.com/vishwajit-vm/strutvane/blob/main/docs/07-package-auth.md) come in later phases:
 
-- A persistent identity engine in the app provider (it uses the in-memory native engine), password-reset and tenant endpoints, screens and the `sv add auth` installer; CLI commands (`sv auth:*`, `sv tenant:*`, `sv audit:*`).
+- A persistent identity engine in the app provider (it uses the in-memory native engine), password-reset endpoints, screens and the `sv add auth` installer; CLI commands (`sv auth:*`, `sv tenant:*`, `sv audit:*`).
 - OIDC/SAML SSO, SCIM, MFA (TOTP, passkeys), magic links, social login, API keys and service-account tokens, JWT refresh rotation.
 - Schema-per-tenant and database-per-tenant strategies (only `shared` + RLS is implemented); custom DB-stored roles, teams and record-scoped assignments.
 - A Postgres audit sink with a transactional outbox and hash chain (the `AuditSink` interface and an in-memory sink exist).

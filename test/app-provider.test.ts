@@ -173,6 +173,39 @@ describe('@strutvane/auth/provider', () => {
       headers: { 'x-tenant-id': '0190a000-0000-7000-8000-00000000000b' },
     })
     expect(other.response?.status).toBe(403)
+
+    const created = await send('POST', '/api/v1/auth/tenants', {
+      cookie,
+      body: JSON.stringify({ name: 'Acme', slug: 'acme' }),
+    })
+    expect(created.response?.status).toBe(201)
+    const tenant = (await created.response?.json()) as { tenantId: string; roles: string[] }
+    expect(tenant.roles).toEqual(['owner'])
+    const dup = await send('POST', '/api/v1/auth/tenants', {
+      cookie,
+      body: JSON.stringify({ name: 'Acme', slug: 'acme' }),
+    })
+    expect(dup.response?.status).toBe(422)
+    const listed = await send('GET', '/api/v1/auth/tenants', { cookie })
+    expect(await listed.response?.json()).toMatchObject({ data: [{ slug: 'acme' }] })
+    expect((await send('GET', '/api/v1/auth/tenants')).response?.status).toBe(401)
+    const switched = await send('POST', '/api/v1/auth/switch-tenant', {
+      cookie,
+      body: JSON.stringify({ tenantId: tenant.tenantId }),
+    })
+    expect(await switched.response?.json()).toMatchObject({
+      actor: { tenantId: tenant.tenantId, roles: ['owner'] },
+    })
+    // Switching rotates the session (fixation defence): use the new cookie.
+    const rotated = cookieOf(switched.response) || cookie
+    const scoped = await send('GET', '/api/v1/invoices', { cookie: rotated })
+    expect(scoped.tenant?.id).toBe(tenant.tenantId)
+    expect(scoped.actor?.roles).toEqual(['owner'])
+    const foreign = await send('POST', '/api/v1/auth/switch-tenant', {
+      cookie: rotated,
+      body: JSON.stringify({ tenantId: '0190a000-0000-7000-8000-00000000000c' }),
+    })
+    expect(foreign.response?.status).toBe(403)
   })
 
   test('loadPolicies: no folder means no policies; a wrong export names the file', async () => {
