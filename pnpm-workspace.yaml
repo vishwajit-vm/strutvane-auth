@@ -1,4 +1,7 @@
+# Our own pre-releases are staged and approved with 2FA (ADR-0018), so they are exempt from
+# pnpm's minimum release age; every third-party package keeps the protection.
 minimumReleaseAgeExclude:
+  - "@strutvane/*"
   - "@better-auth/core@1.7.23"
   - "@better-auth/drizzle-adapter@1.7.23"
   - "@better-auth/kysely-adapter@1.7.23"
@@ -7,8 +10,3 @@ minimumReleaseAgeExclude:
   - "@better-auth/prisma-adapter@1.7.23"
   - "@better-auth/telemetry@1.7.23"
   - better-auth@1.7.23
-# TEMPORARY (ADR-0016): link to sibling checkouts until @strutvane/contracts and @strutvane/core
-# 0.1.0-next.0 are on npm. Remove before committing; CI's check-deps guard rejects it.
-overrides:
-  "@strutvane/contracts": link:../contracts
-  "@strutvane/core": link:../core
