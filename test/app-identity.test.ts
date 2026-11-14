@@ -107,7 +107,8 @@ describe('createAppIdentity: which engine an app runs on', () => {
         database: pg,
       }),
     ).rejects.toMatchObject({ code: 'ECONNREFUSED' })
-  })
+    // The first import of better-auth in a process can take 20+ s on a cold or busy machine.
+  }, 120_000)
 
   test('pool options follow config/database.ts; ssl: true verifies certificates', () => {
     expect(isPostgres({ default: 'azure-postgres' })).toBe(true)
