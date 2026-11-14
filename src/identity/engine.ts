@@ -94,6 +94,29 @@ export interface SignInInput {
   readonly password: string
 }
 
+/** A user as system operations see it (never a password or hash). */
+export interface IdentityUser {
+  readonly id: string
+  /** Normalised (lowercased) email. */
+  readonly email: string
+  readonly name: string
+}
+
+/** A member of a tenant, with the roles held there. */
+export interface TenantMember {
+  readonly userId: string
+  readonly email: string
+  readonly name: string
+  readonly roles: readonly string[]
+}
+
+/** A tenant, as system operations see it. */
+export interface TenantInfo {
+  readonly tenantId: string
+  readonly name: string
+  readonly slug: string
+}
+
 export interface CreateTenantInput {
   readonly name: string
   /** URL-safe unique identifier, e.g. `"acme"`. */
@@ -166,8 +189,9 @@ export interface IdentityEngine {
   ): Promise<IdentityResult<{ readonly actor: Actor }>>
 
   /**
-   * SYSTEM operation (no session): add a user to a tenant. For seeders, invitation acceptance and
-   * tests. Callers authorise it themselves; never expose it over HTTP as is.
+   * SYSTEM operation (no session): add a user to a tenant, or replace the role of an existing
+   * member (idempotent). For seeders, invitation acceptance and tests. Callers authorise it
+   * themselves; never expose it over HTTP as is.
    */
   addMemberAsSystem(input: {
     readonly tenantId: string
@@ -180,6 +204,32 @@ export interface IdentityEngine {
     readonly tenantId: string
     readonly userId: string
   }): Promise<IdentityResult<null>>
+
+  /**
+   * SYSTEM operation: look a user up by email (case-insensitive). `null` when unknown. For
+   * seeders, CLI commands and membership management; never expose it to anonymous callers.
+   */
+  findUserAsSystem(input: { readonly email: string }): Promise<IdentityResult<IdentityUser | null>>
+
+  /**
+   * SYSTEM operation: create an account without signing it in (seeders, `sv auth:user:create`).
+   * Same validation as sign-up; `EMAIL_UNAVAILABLE` when the email is taken. Rate limits do not
+   * apply (no client is involved).
+   */
+  createUserAsSystem(input: SignUpInput): Promise<IdentityResult<IdentityUser>>
+
+  /** SYSTEM operation: create a tenant owned by `ownerUserId` (who becomes `owner`). */
+  createTenantAsSystem(
+    input: CreateTenantInput & { readonly ownerUserId: string },
+  ): Promise<IdentityResult<TenantMembership>>
+
+  /** SYSTEM operation: a tenant by slug, or `null`. */
+  findTenantAsSystem(input: { readonly slug: string }): Promise<IdentityResult<TenantInfo | null>>
+
+  /** SYSTEM operation: every member of a tenant with their roles. */
+  listMembersAsSystem(input: {
+    readonly tenantId: string
+  }): Promise<IdentityResult<readonly TenantMember[]>>
 }
 
 /** A successful result. */

@@ -43,13 +43,21 @@ import {
   type IdentityEngine,
   type IdentityErrorCode,
   type IdentityResult,
+  type IdentityUser,
   ok,
   type PasswordResetDelivery,
+  type TenantInfo,
+  type TenantMember,
   type TenantMembership,
 } from './engine.ts'
 import { createIdentityLimiter } from './limiter.ts'
-import { type ActorAttributes, DEFAULT_RATE_LIMITS, type IdentityRateLimits } from './native.ts'
-import { assertRule, type RateLimitStore } from './rate-limit.ts'
+import {
+  type ActorAttributes,
+  DEFAULT_RATE_LIMITS,
+  type GlobalRoles,
+  type IdentityRateLimits,
+} from './native.ts'
+import { assertRule, normalizeEmail, type RateLimitStore } from './rate-limit.ts'
 
 /** Options for {@link createBetterAuthEngine}. */
 export interface BetterAuthEngineOptions {
@@ -79,6 +87,11 @@ export interface BetterAuthEngineOptions {
   readonly onUnexpectedError?: ErrorReporter
   /** Extra actor attributes for ABAC rules. `emailVerified` is always set. */
   readonly actorAttributes?: ActorAttributes
+  /**
+   * Roles for a user acting **outside** any tenant (platform admins, apps without tenancy).
+   * Default: none (deny-by-default). Tenant roles always come from membership.
+   */
+  readonly globalRoles?: GlobalRoles
 }
 
 /** The engine, plus schema access for Strutvane's migration planner. */
@@ -106,6 +119,8 @@ const FORWARDED_HEADERS = [
 const CLIENT_IP_HEADER = 'x-strutvane-client-ip'
 const BASE_PATH = '/api/auth'
 const EMAIL = /^[^\s@]{1,64}@[^\s@]{1,190}\.[^\s@]{2,63}$/
+const ROLE = /^[a-z][a-z0-9_-]{0,63}$/
+const SLUG = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/
 
 /** Better Auth codes → Strutvane codes. Unknown codes fall back to the HTTP status. */
 const CODE_MAP: Readonly<Record<string, IdentityErrorCode>> = {
@@ -289,6 +304,19 @@ export function createBetterAuthEngine(options: BetterAuthEngineOptions): Better
       .filter((r) => r.length > 0)
   }
 
+  async function globalRolesFor(userId: string): Promise<readonly string[]> {
+    if (!options.globalRoles) return []
+    const ctx = await auth.$context
+    const user = await ctx.adapter.findOne<{ email: string }>({
+      model: 'user',
+      where: [{ field: 'id', value: userId }],
+    })
+    if (!user) return []
+    const roles = await options.globalRoles({ userId, email: user.email })
+    // Same role-name rule as tenant roles: a bad value fails closed instead of granting access.
+    return roles.filter((r) => ROLE.test(r))
+  }
+
   async function actorFrom(
     user: { id: string; emailVerified?: boolean },
     activeTenantId: unknown,
@@ -305,7 +333,7 @@ export function createBetterAuthEngine(options: BetterAuthEngineOptions): Better
     return Object.freeze(
       activeTenant && roles
         ? { ...base, tenantId: activeTenant, roles: Object.freeze([...roles]) }
-        : { ...base, roles: Object.freeze([]) },
+        : { ...base, roles: Object.freeze([...(await globalRolesFor(user.id))]) },
     )
   }
 
@@ -520,18 +548,38 @@ export function createBetterAuthEngine(options: BetterAuthEngineOptions): Better
           !isUuid(input.tenantId) ||
           !isUuid(input.userId) ||
           typeof input.role !== 'string' ||
-          !/^[a-z][a-z0-9_-]{0,63}$/.test(input.role)
+          !ROLE.test(input.role)
         ) {
           return fail('VALIDATION_FAILED')
         }
-        // Better Auth types roles as its configured names; unknown roles are rejected at runtime.
-        await auth.api.addMember({
-          body: {
-            userId: input.userId,
-            organizationId: input.tenantId,
-            role: input.role as 'member',
-          },
-        })
+        // Written through the adapter, not `api.addMember`: Better Auth only accepts its own role
+        // names there, while Strutvane roles come from config/auth.ts (viewer, accountant, …).
+        const ctx = await auth.$context
+        const [org, user] = await Promise.all([
+          ctx.adapter.findOne({
+            model: 'organization',
+            where: [{ field: 'id', value: input.tenantId }],
+          }),
+          ctx.adapter.findOne({ model: 'user', where: [{ field: 'id', value: input.userId }] }),
+        ])
+        if (!org || !user) return fail('VALIDATION_FAILED')
+        const where = [
+          { field: 'userId', value: input.userId },
+          { field: 'organizationId', value: input.tenantId },
+        ]
+        const existing = await ctx.adapter.findOne({ model: 'member', where })
+        if (existing)
+          await ctx.adapter.update({ model: 'member', where, update: { role: input.role } })
+        else
+          await ctx.adapter.create({
+            model: 'member',
+            data: {
+              userId: input.userId,
+              organizationId: input.tenantId,
+              role: input.role,
+              createdAt: new Date(),
+            },
+          })
         return ok(null)
       }),
 
@@ -549,6 +597,129 @@ export function createBetterAuthEngine(options: BetterAuthEngineOptions): Better
           ],
         })
         return ok(null)
+      }),
+
+    findUserAsSystem: (input) =>
+      guarded('findUserAsSystem', async () => {
+        if (typeof input.email !== 'string' || !EMAIL.test(input.email))
+          return ok<IdentityUser | null>(null)
+        const ctx = await auth.$context
+        const user = await ctx.adapter.findOne<{ id: string; email: string; name: string }>({
+          model: 'user',
+          where: [{ field: 'email', value: normalizeEmail(input.email) }],
+        })
+        return ok<IdentityUser | null>(
+          user ? { id: user.id, email: user.email, name: user.name } : null,
+        )
+      }),
+
+    createUserAsSystem: (input) =>
+      guarded('createUserAsSystem', async () => {
+        if (
+          typeof input.email !== 'string' ||
+          !EMAIL.test(input.email) ||
+          typeof input.password !== 'string' ||
+          input.password.length < 12 ||
+          input.password.length > 128 ||
+          typeof input.name !== 'string' ||
+          input.name.length === 0 ||
+          input.name.length > 200
+        ) {
+          return fail('VALIDATION_FAILED')
+        }
+        const ctx = await auth.$context
+        const email = normalizeEmail(input.email)
+        if (await ctx.adapter.findOne({ model: 'user', where: [{ field: 'email', value: email }] }))
+          return fail('EMAIL_UNAVAILABLE')
+        // Better Auth's own server-side sign-up (password hashing, credential account), then the
+        // session it opens is deleted: a system-created account is not signed in anywhere.
+        const result = (await auth.api.signUpEmail({
+          body: { email, password: input.password, name: input.name },
+        })) as { token?: string | null; user: { id: string; email: string; name: string } }
+        if (typeof result.token === 'string')
+          await ctx.adapter.deleteMany({
+            model: 'session',
+            where: [{ field: 'token', value: result.token }],
+          })
+        if (!isUuid(result.user.id)) return fail('INTERNAL_ERROR')
+        return ok<IdentityUser>({
+          id: result.user.id,
+          email: result.user.email,
+          name: result.user.name,
+        })
+      }),
+
+    createTenantAsSystem: (input) =>
+      guarded('createTenantAsSystem', async () => {
+        if (
+          !isUuid(input.ownerUserId) ||
+          typeof input.name !== 'string' ||
+          input.name.length === 0 ||
+          input.name.length > 200 ||
+          typeof input.slug !== 'string' ||
+          !SLUG.test(input.slug)
+        )
+          return fail('VALIDATION_FAILED')
+        const ctx = await auth.$context
+        if (
+          await ctx.adapter.findOne({
+            model: 'organization',
+            where: [{ field: 'slug', value: input.slug }],
+          })
+        )
+          return fail('VALIDATION_FAILED')
+        const org = (await auth.api.createOrganization({
+          body: { name: input.name, slug: input.slug, userId: input.ownerUserId },
+        })) as { id: string; name: string; slug: string } | null
+        if (!org || !isUuid(org.id)) return fail('INTERNAL_ERROR')
+        return ok<TenantMembership>({
+          tenantId: org.id,
+          name: org.name,
+          slug: org.slug,
+          roles: ['owner'],
+        })
+      }),
+
+    findTenantAsSystem: (input) =>
+      guarded('findTenantAsSystem', async () => {
+        if (typeof input.slug !== 'string' || !SLUG.test(input.slug))
+          return ok<TenantInfo | null>(null)
+        const ctx = await auth.$context
+        const org = await ctx.adapter.findOne<{ id: string; name: string; slug: string }>({
+          model: 'organization',
+          where: [{ field: 'slug', value: input.slug }],
+        })
+        return ok<TenantInfo | null>(
+          org ? { tenantId: org.id, name: org.name, slug: org.slug } : null,
+        )
+      }),
+
+    listMembersAsSystem: (input) =>
+      guarded('listMembersAsSystem', async () => {
+        if (!isUuid(input.tenantId)) return fail('VALIDATION_FAILED')
+        const ctx = await auth.$context
+        const rows = await ctx.adapter.findMany<{ userId: string; role: string }>({
+          model: 'member',
+          where: [{ field: 'organizationId', value: input.tenantId }],
+        })
+        const users = rows.length
+          ? await ctx.adapter.findMany<{ id: string; email: string; name: string }>({
+              model: 'user',
+              where: [{ field: 'id', operator: 'in', value: rows.map((r) => r.userId) }],
+            })
+          : []
+        const byId = new Map(users.map((u) => [u.id, u]))
+        const out: TenantMember[] = []
+        for (const r of rows) {
+          const u = byId.get(r.userId)
+          if (!u) continue
+          const roles = r.role
+            .split(',')
+            .map((x) => x.trim())
+            .filter((x) => x.length > 0)
+          out.push({ userId: u.id, email: u.email, name: u.name, roles })
+        }
+        return ok<readonly TenantMember[]>(out)
       }),
   }
   return Object.freeze(engine)

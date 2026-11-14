@@ -59,6 +59,14 @@
       "types": "./dist/provider.d.mts",
       "default": "./dist/provider.mjs"
     },
+    "./admin": {
+      "types": "./dist/admin.d.mts",
+      "default": "./dist/admin.mjs"
+    },
+    "./commands": {
+      "types": "./dist/commands.d.mts",
+      "default": "./dist/commands.mjs"
+    },
     "./package.json": "./package.json"
   },
   "files": [
@@ -125,5 +133,9 @@
     "tsdown": "0.23.7",
     "typescript": "6.0.3",
     "vitest": "5.1.0"
+  },
+  "strutvane": {
+    "commands": "./dist/commands.mjs",
+    "compat": "^0.1.0-next.0"
   }
 }

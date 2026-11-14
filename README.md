@@ -183,9 +183,37 @@ through core (container token + hooks), never by importing the framework:
   account cannot be created. Self-registered users get `defaultRoles` (none unless configured). Engines
   can supply them through the `globalRoles` option of `createNativeEngine`.
 
-The provider uses the native engine: accounts and sessions live in memory and are lost on restart,
-so it is for development and tests. Persistent identity (Better Auth on Postgres) is wired by hand
-for now (`@strutvane/auth/better-auth`).
+- **Persistent identity:** with `session: { driver: 'database' }` (the generated default, from
+  `AUTH_SESSION_DRIVER`) on PostgreSQL, the provider runs the hardened Better Auth engine on the
+  app's own database: accounts, sessions, tenants and memberships survive restarts and are shared by
+  every process, and rate-limit counters live in `strutvane_rate_limits`. It needs the `better-auth`
+  and `pg` packages and a 32+ character `secret`. Create the tables once with
+  `pnpm sv auth:migration` (writes `database/migrations/<ts>_auth_identity.sql`, only what is
+  missing) and `pnpm sv migrate`; boot fails with that instruction while they are missing.
+  `driver: 'memory'`, or any other database, uses the native in-memory engine (development and
+  tests; a warning says so).
+- **Members:** a tenant's owners list, add and remove members over HTTP:
+  `GET|POST /auth/tenants/:id/members` (`{ "email", "role" }`: an existing account and a role from
+  `config/auth.ts`; re-posting changes the role) and `DELETE /auth/tenants/:id/members/:userId`. The
+  last owner cannot be removed or demoted. Anyone else (members, viewers, the platform admin, a
+  forged tenant id) gets the same 403. Role changes apply on the member's next request.
+- **Scripts and seeders:** `openIdentityAdmin()` from `@strutvane/auth/admin` builds the same engine
+  from the project's `.env` and `config/` and offers idempotent `ensureUser`, `ensureTenant` and
+  `setMember` (it refuses an in-memory store, whose writes would vanish):
+
+  ```ts
+  const idp = await openIdentityAdmin()
+  try {
+    const acme = await idp.ensureTenant({ name: 'Acme', slug: 'acme', ownerEmail: 'olivia@acme.test' })
+    await idp.setMember({ tenant: 'acme', email: 'vic@acme.test', role: 'viewer' })
+  } finally {
+    await idp.close()
+  }
+  ```
+- **Commands** (contributed to `sv`): `auth:migration`, `auth:user:create --email --name
+  --password-env VAR` (the password is read from that environment variable, never a flag),
+  `tenant:create --name --slug --owner <email>` and `tenant:member:add --tenant <slug> --email
+  --role`.
 
 ## Security notes
 

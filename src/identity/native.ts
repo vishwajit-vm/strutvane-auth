@@ -34,8 +34,12 @@ import {
   fail,
   type IdentityEngine,
   type IdentityResult,
+  type IdentityUser,
   ok,
   type PasswordResetDelivery,
+  type SignUpInput,
+  type TenantInfo,
+  type TenantMember,
   type TenantMembership,
 } from './engine.ts'
 import { createIdentityLimiter } from './limiter.ts'
@@ -288,6 +292,49 @@ export function createNativeEngine(options: NativeEngineOptions): IdentityEngine
     password.length >= MIN_PASSWORD &&
     password.length <= MAX_PASSWORD
 
+  /** Validate and store a new user (shared by sign-up and the system path). */
+  const createUser = async (input: SignUpInput): Promise<IdentityResult<User>> => {
+    if (
+      !isText(input.email, 254) ||
+      !EMAIL.test(input.email) ||
+      !passwordOk(input.password) ||
+      !isText(input.name, 200)
+    ) {
+      return fail('VALIDATION_FAILED')
+    }
+    const key = normalizeEmail(input.email)
+    if (byEmail.has(key)) return fail('EMAIL_UNAVAILABLE')
+    const salt = randomBytes(16)
+    const user: User = {
+      id: uuidv7(),
+      email: key,
+      name: input.name,
+      salt,
+      hash: await hashPassword(input.password, salt),
+    }
+    // Re-check after the await: two concurrent sign-ups for one email must not both win.
+    if (byEmail.has(key)) return fail('EMAIL_UNAVAILABLE')
+    users.set(user.id, user)
+    byEmail.set(key, user.id)
+    return ok(user)
+  }
+
+  const publicUser = (u: User): IdentityUser => ({ id: u.id, email: u.email, name: u.name })
+
+  /** Validate and store a new tenant owned by `ownerId`. */
+  const createTenantFor = (
+    ownerId: string,
+    input: { readonly name: unknown; readonly slug: unknown },
+  ): IdentityResult<Tenant> => {
+    if (!isText(input.name, 200) || typeof input.slug !== 'string' || !SLUG.test(input.slug))
+      return fail('VALIDATION_FAILED')
+    if ([...tenants.values()].some((t) => t.slug === input.slug)) return fail('VALIDATION_FAILED')
+    const tenant: Tenant = { id: uuidv7(), name: input.name, slug: input.slug }
+    tenants.set(tenant.id, tenant)
+    members.set(tenant.id, new Map([[ownerId, ['owner']]]))
+    return ok(tenant)
+  }
+
   const authenticate = async (request: Request): Promise<Authentication> => {
     try {
       const c = current(request)
@@ -307,29 +354,9 @@ export function createNativeEngine(options: NativeEngineOptions): IdentityEngine
       guarded('signUp', async () => {
         const retry = await limited(request, 'signup', limits.signUpPerIp)
         if (retry !== undefined) return fail('RATE_LIMITED', new Headers(), retry)
-        if (
-          !isText(input.email, 254) ||
-          !EMAIL.test(input.email) ||
-          !passwordOk(input.password) ||
-          !isText(input.name, 200)
-        ) {
-          return fail('VALIDATION_FAILED')
-        }
-        const key = normalizeEmail(input.email)
-        if (byEmail.has(key)) return fail('EMAIL_UNAVAILABLE')
-        const salt = randomBytes(16)
-        const user: User = {
-          id: uuidv7(),
-          email: key,
-          name: input.name,
-          salt,
-          hash: await hashPassword(input.password, salt),
-        }
-        // Re-check after the await: two concurrent sign-ups for one email must not both win.
-        if (byEmail.has(key)) return fail('EMAIL_UNAVAILABLE')
-        users.set(user.id, user)
-        byEmail.set(key, user.id)
-        const created = newSession(user.id)
+        const made = await createUser(input)
+        if (!made.ok) return fail(made.error.code)
+        const created = newSession(made.value.id)
         return ok({ actor: await actorFor(created.session) }, created.headers)
       }),
 
@@ -416,13 +443,9 @@ export function createNativeEngine(options: NativeEngineOptions): IdentityEngine
       guarded('createTenant', async () => {
         const c = current(request)
         if (!c) return fail('UNAUTHENTICATED')
-        if (!isText(input.name, 200) || typeof input.slug !== 'string' || !SLUG.test(input.slug))
-          return fail('VALIDATION_FAILED')
-        if ([...tenants.values()].some((t) => t.slug === input.slug))
-          return fail('VALIDATION_FAILED')
-        const tenant: Tenant = { id: uuidv7(), name: input.name, slug: input.slug }
-        tenants.set(tenant.id, tenant)
-        members.set(tenant.id, new Map([[c.session.userId, ['owner']]]))
+        const made = createTenantFor(c.session.userId, input)
+        if (!made.ok) return fail(made.error.code)
+        const tenant = made.value
         // Privileges changed (the user is now an owner): rotate the token, like switchTenant, so a
         // token captured before cannot ride along into the new tenant.
         sessions.delete(c.key)
@@ -484,6 +507,54 @@ export function createNativeEngine(options: NativeEngineOptions): IdentityEngine
         if (!isUuid(input.tenantId) || !isUuid(input.userId)) return fail('VALIDATION_FAILED')
         members.get(input.tenantId.toLowerCase())?.delete(input.userId)
         return ok(null)
+      }),
+
+    findUserAsSystem: (input) =>
+      guarded('findUserAsSystem', async () => {
+        if (!isText(input.email, 254)) return ok<IdentityUser | null>(null)
+        const user = users.get(byEmail.get(normalizeEmail(input.email)) ?? '')
+        return ok<IdentityUser | null>(user ? publicUser(user) : null)
+      }),
+
+    createUserAsSystem: (input) =>
+      guarded('createUserAsSystem', async () => {
+        const made = await createUser(input)
+        return made.ok ? ok(publicUser(made.value)) : fail(made.error.code)
+      }),
+
+    createTenantAsSystem: (input) =>
+      guarded('createTenantAsSystem', async () => {
+        if (!isUuid(input.ownerUserId) || !users.has(input.ownerUserId))
+          return fail('VALIDATION_FAILED')
+        const made = createTenantFor(input.ownerUserId, input)
+        if (!made.ok) return fail(made.error.code)
+        const t = made.value
+        return ok<TenantMembership>({
+          tenantId: t.id,
+          name: t.name,
+          slug: t.slug,
+          roles: ['owner'],
+        })
+      }),
+
+    findTenantAsSystem: (input) =>
+      guarded('findTenantAsSystem', async () => {
+        const t = [...tenants.values()].find((x) => x.slug === input.slug)
+        return ok<TenantInfo | null>(t ? { tenantId: t.id, name: t.name, slug: t.slug } : null)
+      }),
+
+    listMembersAsSystem: (input) =>
+      guarded('listMembersAsSystem', async () => {
+        const roster = isUuid(input.tenantId)
+          ? members.get(input.tenantId.toLowerCase())
+          : undefined
+        if (!roster) return fail('VALIDATION_FAILED')
+        const out: TenantMember[] = []
+        for (const [userId, roles] of roster) {
+          const u = users.get(userId)
+          if (u) out.push({ userId, email: u.email, name: u.name, roles: [...roles] })
+        }
+        return ok<readonly TenantMember[]>(out)
       }),
   } satisfies IdentityEngine)
 }

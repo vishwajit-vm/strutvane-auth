@@ -460,6 +460,91 @@ export function runIdentityContract(label: string, factory: EngineFactory): void
         ).toBe('VALIDATION_FAILED')
       })
 
+      test('system operations: users, tenants and members (seeders, CLI, membership admin)', async () => {
+        const email = testEmail('system')
+        const created = await engine.createUserAsSystem({
+          email: email.toUpperCase(),
+          password: TEST_PASSWORD,
+          name: 'System User',
+        })
+        expect(created.ok).toBe(true)
+        if (!created.ok) return
+        // Not signed in anywhere: no cookie is issued for a system-created account.
+        expect(created.headers.getSetCookie()).toEqual([])
+        expect(created.value.email).toBe(email.toLowerCase())
+        expect(
+          code(await engine.createUserAsSystem({ email, password: TEST_PASSWORD, name: 'Again' })),
+        ).toBe('EMAIL_UNAVAILABLE')
+        expect(
+          code(
+            await engine.createUserAsSystem({
+              email: testEmail('weak'),
+              password: 'short',
+              name: 'W',
+            }),
+          ),
+        ).toBe('VALIDATION_FAILED')
+        const found = await engine.findUserAsSystem({ email: email.toUpperCase() })
+        expect(found.ok ? found.value?.id : null).toBe(created.value.id)
+        const missing = await engine.findUserAsSystem({ email: testEmail('nobody') })
+        expect(missing.ok ? missing.value : 'error').toBeNull()
+        // The account can sign in with the password it was created with.
+        const signedIn = await engine.signIn(
+          { email, password: TEST_PASSWORD },
+          browserRequest(CONTRACT_DEV_URL, { ip: freshIp() }),
+        )
+        expect(signedIn.ok).toBe(true)
+
+        const slug = `sys-${created.value.id.slice(-8)}`
+        const tenant = await engine.createTenantAsSystem({
+          name: 'System Tenant',
+          slug,
+          ownerUserId: created.value.id,
+        })
+        expect(tenant.ok ? tenant.value.roles : null).toEqual(['owner'])
+        if (!tenant.ok) return
+        expect(
+          code(
+            await engine.createTenantAsSystem({ name: 'Dup', slug, ownerUserId: created.value.id }),
+          ),
+        ).toBe('VALIDATION_FAILED')
+        const bySlug = await engine.findTenantAsSystem({ slug })
+        expect(bySlug.ok ? bySlug.value?.tenantId : null).toBe(tenant.value.tenantId)
+
+        // Any configured role name works (not just the engine's built-ins), and re-adding a member
+        // replaces the role instead of duplicating the membership.
+        const viewer = await engine.createUserAsSystem({
+          email: testEmail('system-viewer'),
+          password: TEST_PASSWORD,
+          name: 'Viewer',
+        })
+        if (!viewer.ok) throw new Error('viewer not created')
+        const add = (role: string) =>
+          engine.addMemberAsSystem({
+            tenantId: tenant.value.tenantId,
+            userId: viewer.value.id,
+            role,
+          })
+        expect((await add('viewer')).ok).toBe(true)
+        expect((await add('member')).ok).toBe(true)
+        const roster = await engine.listMembersAsSystem({ tenantId: tenant.value.tenantId })
+        const rows = roster.ok ? [...roster.value].sort((a, b) => a.name.localeCompare(b.name)) : []
+        expect(rows.map((m) => [m.name, m.roles])).toEqual([
+          ['System User', ['owner']],
+          ['Viewer', ['member']],
+        ])
+        expect(code(await engine.listMembersAsSystem({ tenantId: 'x' }))).toBe('VALIDATION_FAILED')
+        expect(
+          code(
+            await engine.addMemberAsSystem({
+              tenantId: tenant.value.tenantId,
+              userId: '0190f2a0-0000-7000-8000-00000000dead',
+              role: 'member',
+            }),
+          ),
+        ).toBe('VALIDATION_FAILED')
+      })
+
       test('tenant operations require a session', async () => {
         expect(code(await engine.listTenants(req()))).toBe('UNAUTHENTICATED')
         expect(code(await engine.switchTenant({ tenantId: 'x' }, req()))).toBe('UNAUTHENTICATED')

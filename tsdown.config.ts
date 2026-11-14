@@ -10,6 +10,8 @@ export default defineConfig({
     node: 'src/middleware/node.ts',
     testing: 'src/testing/index.ts',
     provider: 'src/provider.ts',
+    admin: 'src/admin.ts',
+    commands: 'src/commands.ts',
   },
   format: 'esm',
   platform: 'node',
