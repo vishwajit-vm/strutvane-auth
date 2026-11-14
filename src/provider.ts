@@ -10,7 +10,9 @@
  *   tenancy on) for every request, and answers the auth endpoints itself:
  *   `POST {api}/auth/sign-up`, `POST {api}/auth/sign-in`, `POST {api}/auth/sign-out`,
  *   `GET {api}/auth/me`, and for tenancy `POST|GET {api}/auth/tenants` and
- *   `POST {api}/auth/switch-tenant` (members only; the creator becomes `owner`).
+ *   `POST {api}/auth/switch-tenant` (members only; the creator becomes `owner`);
+ * - enforces policy field rules: `resource.serialize` drops fields the actor may not read and
+ *   `resource.beforeWrite` refuses writes to fields the actor may not write (see field-rules.ts).
  *
  * Identity uses the native engine (in memory, single process): accounts and sessions are lost on
  * restart, so it is for development and tests. On boot it creates the `seedAdmin` account from
@@ -46,6 +48,7 @@ import {
 } from '@strutvane/core'
 import type { AuthConfig } from './config.ts'
 import { AUTH_ERRORS } from './errors.ts'
+import { registerFieldRules } from './field-rules.ts'
 import { attachRequestMeta } from './http/request-meta.ts'
 import type { IdentityResult } from './identity/engine.ts'
 import { createNativeEngine } from './identity/native.ts'
@@ -242,6 +245,8 @@ export function createAuthProvider(): Provider {
         ...(cfg.newModelDefaults ? { newModelDefaults: cfg.newModelDefaults } : {}),
       })
       permissions = createPermissionProvider(await loadPolicies(root), { roles })
+      // Field-level read/write rules ride on the framework's resource hooks (integration map §4).
+      registerFieldRules(app.make(HooksToken), permissions)
 
       const seedEmail = cfg.seedAdmin?.email?.toLowerCase()
       const seedRole = cfg.seedAdmin?.role ?? 'admin'

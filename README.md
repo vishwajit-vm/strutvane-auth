@@ -159,6 +159,11 @@ through core (container token + hooks), never by importing the framework:
   `PermissionProviderToken` (deny-by-default). A policy gets its schema from the model:
   `definePolicy('invoice', { schema: policySchema(Invoice) }, ({ allow }) => { … })`
   (`policySchema` comes from `@strutvane/framework`).
+- **Field rules:** a policy's `field('amount').readable({ role })` and `.writable({ role })` are
+  enforced on every API record: the framework's `resource.serialize` hook drops fields the actor may
+  not read (lists, show, write responses and included relations), and `resource.beforeWrite` refuses
+  (403) a create or update that sends a field the actor may not write. Filters, sorts and search on
+  unreadable fields are refused through `filterableFields`.
 - **Identity:** an `http.onRequest` hook (`auth.identity`) resolves the actor (and, with
   `config/tenancy.ts` `enabled: true`, the tenant from the session). `X-Tenant-Id` is honoured only
   for tenant-less service actors, and anonymous requests are never scoped to a tenant. The hook's
