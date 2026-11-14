@@ -198,6 +198,29 @@ interface HandlerResponse {
   readonly headers: Headers
 }
 
+/**
+ * The session token in the request's Better Auth cookie (`<token>.<signature>`), or `undefined`.
+ * Only used to revoke that exact session; a forged value matches no row.
+ */
+export function presentedToken(request: Request): string | undefined {
+  for (const pair of (request.headers.get('cookie') ?? '').split(';')) {
+    const eq = pair.indexOf('=')
+    if (eq < 0) continue
+    const name = pair.slice(0, eq).trim()
+    if (name !== 'better-auth.session_token' && name !== '__Secure-better-auth.session_token')
+      continue
+    let value: string
+    try {
+      value = decodeURIComponent(pair.slice(eq + 1).trim())
+    } catch {
+      return undefined
+    }
+    const token = value.split('.')[0] ?? ''
+    return /^[A-Za-z0-9_-]{16,128}$/.test(token) ? token : undefined
+  }
+  return undefined
+}
+
 /** Create the hardened Better Auth identity engine. */
 export function createBetterAuthEngine(options: BetterAuthEngineOptions): BetterAuthEngine {
   if (typeof options.secret !== 'string' || options.secret.length < 32) {
@@ -441,10 +464,21 @@ export function createBetterAuthEngine(options: BetterAuthEngineOptions): Better
         if (retry !== undefined) return fail('RATE_LIMITED', new Headers(), retry)
         if (!EMAIL.test(email) || typeof input.password !== 'string')
           return fail('INVALID_CREDENTIALS')
-        return signedIn(
+        const result = await signedIn(
           request,
           await call('POST', '/sign-in/email', request, { email, password: input.password }),
         )
+        // Session fixation (defence in depth): the session the browser presented, possibly planted
+        // by an attacker, is revoked once a NEW one has been issued. Better Auth keeps it alive.
+        const presented = presentedToken(request)
+        if (result.ok && presented !== undefined) {
+          const ctx = await auth.$context
+          await ctx.adapter.deleteMany({
+            model: 'session',
+            where: [{ field: 'token', value: presented }],
+          })
+        }
+        return result
       }),
 
     signOut: (request) =>

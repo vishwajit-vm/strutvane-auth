@@ -182,6 +182,9 @@ export function runIdentityContract(label: string, factory: EngineFactory): void
         expect(a.length).toBeGreaterThan(0)
         expect(b).not.toEqual(a)
         expect(b).not.toEqual([...planted.values()])
+        // The presented (possibly planted) session is revoked, not left alive next to the new one.
+        expect(await engine.getActor(req(new Map(planted)))).toBeNull()
+        expect(await engine.getActor(req(store(newJar(), second)))).not.toBeNull()
       })
 
       test('session cookies are HttpOnly, SameSite=Lax, Path=/ and not Secure on http dev URLs', async () => {
