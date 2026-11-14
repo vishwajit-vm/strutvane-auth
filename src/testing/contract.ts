@@ -388,6 +388,34 @@ export function runIdentityContract(label: string, factory: EngineFactory): void
         ])
       })
 
+      test('a refused switch leaves the current tenant active (no silent tenant loss)', async () => {
+        const ownerA = await signedUpUser('keep-a')
+        const ownerB = await signedUpUser('keep-b')
+        const a = await engine.createTenant(
+          { name: 'A', slug: `ka-${ownerA.id.slice(-8)}` },
+          req(ownerA.jar),
+        )
+        const b = await engine.createTenant(
+          { name: 'B', slug: `kb-${ownerB.id.slice(-8)}` },
+          req(ownerB.jar),
+        )
+        if (!a.ok || !b.ok) throw new Error('tenants not created')
+        store(ownerB.jar, b)
+        expect((await engine.getActor(req(ownerB.jar)))?.tenantId).toBe(b.value.tenantId)
+        for (const tenantId of [
+          a.value.tenantId,
+          '0190f2a0-0000-7000-8000-00000000dead',
+          'garbage',
+        ]) {
+          const refused = await engine.switchTenant({ tenantId }, req(ownerB.jar))
+          expect(code(refused)).toBe('FORBIDDEN')
+          store(ownerB.jar, refused)
+          const actor = await engine.getActor(req(ownerB.jar))
+          expect(actor?.tenantId).toBe(b.value.tenantId)
+          expect(actor?.roles).toEqual(['owner'])
+        }
+      })
+
       test('a non-member cannot switch into a tenant; unknown and malformed tenants look identical', async () => {
         const owner = await signedUpUser('tenant-a-owner')
         const outsider = await signedUpUser('outsider')

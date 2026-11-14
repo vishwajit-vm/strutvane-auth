@@ -20,7 +20,12 @@
  *
  * @module
  */
-import type { Actor } from '@strutvane/contracts'
+import type {
+  Actor,
+  FieldDescriptor,
+  ResourceDescriptor,
+  ResourceManifest,
+} from '@strutvane/contracts'
 import { ForbiddenError, type HookRegistry } from '@strutvane/core'
 import type { Policy } from './policy/policy.ts'
 
@@ -103,8 +108,47 @@ export function registerFieldRules(
     },
     { name: 'auth.fieldWrite' },
   )
+  const offManifest = hooks.on(
+    'manifest.build',
+    (raw) => {
+      const payload = raw as { actor?: Actor | null; manifest?: ResourceManifest }
+      if (!payload.manifest || !Array.isArray(payload.manifest.resources)) return undefined
+      const resources = payload.manifest.resources.map((resource) =>
+        manifestResourceFor(resource, payload.actor ?? null, policies),
+      )
+      return { ...payload, manifest: { ...payload.manifest, resources } }
+    },
+    { name: 'auth.fieldManifest' },
+  )
   return () => {
     offRead()
     offWrite()
+    offManifest()
   }
+}
+
+/**
+ * The actor's view of one manifest resource: fields they may not read are left out (a UI must not
+ * offer a column or input it would always receive empty), and fields they may not write are marked
+ * read-only.
+ */
+export function manifestResourceFor(
+  resource: ResourceDescriptor,
+  actor: Actor | null,
+  policies: PolicyLookup,
+): ResourceDescriptor {
+  const policy = policies.policy(lowerFirst(resource.name))
+  if (!policy) return resource
+  const hidden = new Set(unreadableFields(policy, actor))
+  const writable = new Set(policy.writableFields(actor))
+  const fields: FieldDescriptor[] = []
+  for (const field of resource.fields) {
+    if (hidden.has(field.name)) continue
+    const locked =
+      Object.hasOwn(policy.schema.columns, field.name) &&
+      !writable.has(field.name) &&
+      !field.readOnly
+    fields.push(locked ? { ...field, readOnly: true } : field)
+  }
+  return { ...resource, fields }
 }

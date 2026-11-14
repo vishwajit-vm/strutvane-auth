@@ -105,6 +105,66 @@ describe('resource.beforeWrite: field write rules', () => {
   })
 })
 
+describe('manifest.build: what a UI may offer', () => {
+  test('unreadable fields are left out, unwritable ones become read-only, per actor', async () => {
+    const hooks = await boot()
+    const field = (name: string, readOnly = false) => ({
+      name,
+      type: 'string',
+      label: name,
+      required: false,
+      nullable: true,
+      unique: false,
+      readOnly,
+      writeOnce: false,
+      filterOperators: [],
+      sortable: false,
+      searchable: false,
+    })
+    const manifest = {
+      manifestVersion: 1,
+      app: { name: 'x', apiVersion: 'v1' },
+      generatedAt: 'now',
+      resources: [
+        {
+          name: 'Deal',
+          path: 'deals',
+          label: 'Deal',
+          pluralLabel: 'Deals',
+          fields: [field('id', true), field('title'), field('amount'), field('ownerId')],
+          actions: [],
+          capabilities: {},
+        },
+        { name: 'Other', path: 'others', label: 'O', pluralLabel: 'Os', fields: [field('amount')] },
+      ],
+    }
+    const view = async (roles: string[] | null) =>
+      (
+        (await hooks.run('manifest.build', {
+          actor: roles === null ? null : actor(roles),
+          manifest,
+        })) as { manifest: typeof manifest }
+      ).manifest.resources
+    const viewer = await view(['viewer'])
+    expect(viewer[0]?.fields.map((f) => `${f.name}${f.readOnly ? '(ro)' : ''}`)).toEqual([
+      'id(ro)',
+      'title',
+      'ownerId(ro)',
+    ])
+    // Resources without a policy pass through untouched.
+    expect(viewer[1]?.fields.map((f) => f.name)).toEqual(['amount'])
+    const admin = await view(['admin'])
+    expect(admin[0]?.fields.map((f) => `${f.name}${f.readOnly ? '(ro)' : ''}`)).toEqual([
+      'id(ro)',
+      'title',
+      'amount',
+      'ownerId',
+    ])
+    expect((await view(null))[0]?.fields.map((f) => f.name)).not.toContain('amount')
+    expect(await hooks.run('manifest.build', { actor: null })).toEqual({ actor: null })
+  })
+})
+
 describe('helpers', () => {
   test('unreadableFields / forbiddenWrites only report fields that carry a rule', async () => {
     const { createPermissionProvider } = await import('../src/policy/provider.ts')

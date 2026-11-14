@@ -527,6 +527,10 @@ export function createBetterAuthEngine(options: BetterAuthEngineOptions): Better
         const current = await session(request)
         if (!current) return fail('UNAUTHENTICATED')
         if (typeof input.tenantId !== 'string' || !isUuid(input.tenantId)) return fail('FORBIDDEN') // same as "unknown"
+        // Check membership BEFORE asking Better Auth: a refused set-active can still leave the
+        // requested organization in the session, which silently dropped the caller's current
+        // tenant (actorFrom then saw a stale tenant and fell back to none).
+        if (!(await rolesIn(current.user.id, input.tenantId))) return fail('FORBIDDEN')
         const res = await call('POST', '/organization/set-active', request, {
           organizationId: input.tenantId,
         })
