@@ -31,6 +31,8 @@
  * - In allow rules, a condition part that depends on a null actor value never widens access, even
  *   under `ne`, `nin` or `not` (see `bindActor`'s `failClosed`).
  * - A rule *covers* a record when its `when` condition (if any) and its `check` (if any) are true.
+ * - **Extra grants** (the role map, see {@link ExtraGrant}) passed to `decide`/`explain`/`filterFor`
+ *   join the allow side as ordinary allow rules: `(policy allows OR grants) AND NOT policy denies`.
  *
  * ## Without a record (fail closed)
  * When no record is passed, a rule whose outcome depends on the record cannot be decided. The
@@ -79,6 +81,27 @@ export interface CheckContext {
  * - `'tenant'`: only inside the actor's active tenant.
  */
 export type RoleScope = 'any' | 'global' | 'tenant'
+
+/**
+ * An allow rule from another grant layer (today: the role map in `config/auth.ts`, compiled by
+ * `compileRoleMap`), passed to `decide`/`explain`/`filterFor` for one call.
+ *
+ * The caller has already established that the grant APPLIES to the actor (role held, scope
+ * matched). It then takes part in the policy's normal combination as one more allow rule:
+ * `(policy allows OR grants) AND NOT policy denies`, so an explicit policy `deny` still wins, and
+ * its `when` condition is validated against the schema, bound fail-closed (a null actor value never
+ * matches) and compiled to SQL exactly like a policy rule's.
+ */
+export interface ExtraGrant {
+  /** Shown in `Decision.reason` (`allow:<name>`) and in `explain()` traces. */
+  readonly name: string
+  /** The role that holds the grant (for traces only). */
+  readonly role?: string
+  /** The scope the grant was matched in (for traces only). Default `'any'`. */
+  readonly scope?: RoleScope
+  /** A condition on the record (may reference the actor). Omit for an unconditional allow. */
+  readonly when?: QueryFilter
+}
 
 /** Options for one allow or deny rule. */
 export interface RuleOptions<S extends ModelSchema, A extends AttrDecl> {
@@ -175,14 +198,35 @@ export interface Policy<S extends ModelSchema = ModelSchema> {
   /** Every action named by a rule (without the resource prefix). */
   readonly actions: readonly string[]
   readonly rules: readonly RuleInfo[]
-  /** Decide one action, in memory. Pass `record` for record-level actions. */
-  decide(actor: Actor | null, action: string, record?: RecordValue): Decision
+  /**
+   * Decide one action, in memory. Pass `record` for record-level actions. `grants` adds allow
+   * rules from another layer (the role map; see {@link ExtraGrant}); policy denies still win.
+   */
+  decide(
+    actor: Actor | null,
+    action: string,
+    record?: RecordValue,
+    grants?: readonly ExtraGrant[],
+  ): Decision
   /** Shorthand for `decide(...).allowed`. */
-  can(actor: Actor | null, action: string, record?: RecordValue): boolean
-  /** The bound, validated row filter for list queries. `{ op: 'false' }` when nothing is allowed. */
-  filterFor(actor: Actor | null, action: string): QueryFilter
+  can(
+    actor: Actor | null,
+    action: string,
+    record?: RecordValue,
+    grants?: readonly ExtraGrant[],
+  ): boolean
+  /**
+   * The bound, validated row filter for list queries. `{ op: 'false' }` when nothing is allowed.
+   * `grants` are OR-ed into the allow side, before the policy's denies are subtracted.
+   */
+  filterFor(actor: Actor | null, action: string, grants?: readonly ExtraGrant[]): QueryFilter
   /** The decision plus a per-rule trace (`sv auth:explain`). */
-  explain(actor: Actor | null, action: string, record?: RecordValue): Explanation
+  explain(
+    actor: Actor | null,
+    action: string,
+    record?: RecordValue,
+    grants?: readonly ExtraGrant[],
+  ): Explanation
   /** Fields the actor may read. */
   readableFields(actor: Actor | null): readonly string[]
   /** Fields the actor may write. */
@@ -492,8 +536,51 @@ export function definePolicy<
     }
   }
 
+  /**
+   * An extra grant as a rule. Its condition goes through the same gate as a policy rule's (fields
+   * exist, actor references compare with text/uuid columns), so a bad grant fails loudly instead of
+   * matching wrongly. Cached per grant object: role layers hand out the same objects every call.
+   */
+  const grantRules = new WeakMap<ExtraGrant, Map<string, Rule>>()
+  const grantRule = (grant: ExtraGrant, action: string): Rule => {
+    const cached = grantRules.get(grant)?.get(action)
+    if (cached) return cached
+    if (typeof grant !== 'object' || grant === null || typeof grant.name !== 'string')
+      throw new TypeError('grants must be objects with a name')
+    const condition =
+      grant.when === undefined
+        ? undefined
+        : checkCondition(`${resource} grant "${grant.name}"`, grant.when)
+    const scope = grant.scope ?? 'any'
+    const rule: Rule = {
+      info: Object.freeze({
+        name: grant.name,
+        effect: 'allow',
+        actions: Object.freeze([action]),
+        roles: Object.freeze(grant.role === undefined ? [] : [grant.role]),
+        scope,
+        anonymous: false,
+        conditional: condition !== undefined,
+        listFilterable: true,
+      }),
+      roles: new Set<string>(),
+      scope,
+      when: condition?.when,
+      check: undefined,
+      refs: condition?.refs ?? [],
+    }
+    const perAction = grantRules.get(grant) ?? new Map<string, Rule>()
+    perAction.set(action, rule)
+    grantRules.set(grant, perAction)
+    return rule
+  }
+
   /** Every rule for this action, flagged with whether it applies to this actor. */
-  const candidates = (actor: Actor | null, action: string): { rule: Rule; applies: boolean }[] => {
+  const candidates = (
+    actor: Actor | null,
+    action: string,
+    grants: readonly ExtraGrant[] = [],
+  ): { rule: Rule; applies: boolean }[] => {
     assertActor(actor)
     assertAction(action)
     const list = rules
@@ -503,6 +590,9 @@ export function definePolicy<
         applies: actor === null ? rule.info.anonymous : holdsRole(actor, rule.roles, rule.scope),
       }))
     if (hasPermission(actor, action)) list.push({ rule: permissionRule(action), applies: true })
+    // Grants never apply to anonymous requests: the role layer only grants to held roles.
+    for (const grant of grants)
+      list.push({ rule: grantRule(grant, action), applies: actor !== null })
     return list
   }
 
@@ -534,7 +624,12 @@ export function definePolicy<
     return rule.check ? rule.check({ actor, record }) === true : true
   }
 
-  const explain = (actor: Actor | null, action: string, record?: RecordValue): Explanation => {
+  const explain = (
+    actor: Actor | null,
+    action: string,
+    record?: RecordValue,
+    grants?: readonly ExtraGrant[],
+  ): Explanation => {
     const traces: RuleTrace[] = []
     let deny: Rule | undefined
     let allow: Rule | undefined
@@ -542,7 +637,7 @@ export function definePolicy<
     let dependsAllow: Rule | undefined
     // Evaluate EVERY applicable rule (no short-circuit), so errors such as an unloaded field always
     // surface, independent of rule order.
-    for (const { rule, applies } of candidates(actor, action)) {
+    for (const { rule, applies } of candidates(actor, action, grants)) {
       if (!applies) {
         traces.push({ rule: rule.info, outcome: 'not-applicable' })
         continue
@@ -570,8 +665,12 @@ export function definePolicy<
     return { resource, action, decision: Object.freeze(decision), rules: traces }
   }
 
-  const filterFor = (actor: Actor | null, action: string): QueryFilter => {
-    const applicable = candidates(actor, action)
+  const filterFor = (
+    actor: Actor | null,
+    action: string,
+    grants?: readonly ExtraGrant[],
+  ): QueryFilter => {
+    const applicable = candidates(actor, action, grants)
       .filter((c) => c.applies)
       .map((c) => c.rule)
     const scripted = applicable.find((r) => r.check)
@@ -608,8 +707,8 @@ export function definePolicy<
     schema,
     actions: Object.freeze(actionsList),
     rules: Object.freeze(rules.map((r) => r.info)),
-    decide: (actor, action, record) => explain(actor, action, record).decision,
-    can: (actor, action, record) => explain(actor, action, record).decision.allowed,
+    decide: (actor, action, record, grants) => explain(actor, action, record, grants).decision,
+    can: (actor, action, record, grants) => explain(actor, action, record, grants).decision.allowed,
     filterFor,
     explain,
     readableFields: (actor) => fieldsWhere(actor, 'read'),

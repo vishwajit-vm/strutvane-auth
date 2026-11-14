@@ -22,6 +22,7 @@ export {
   type RecordAuditOptions,
   recordAudit,
 } from './audit/audit.ts'
+export { type AuthConfig, defineAuthConfig, type SocialProviderConfig } from './config.ts'
 export {
   AUTH_ERRORS,
   FieldNotLoadedError,
@@ -106,6 +107,7 @@ export {
   type CheckContext,
   definePolicy,
   type Explanation,
+  type ExtraGrant,
   type FieldAccessOptions,
   type FieldRuleBuilder,
   type Policy,
@@ -117,7 +119,20 @@ export {
   type RuleOptions,
   type RuleTrace,
 } from './policy/policy.ts'
-export { createPermissionProvider, type StrutvanePermissionProvider } from './policy/provider.ts'
+export {
+  createPermissionProvider,
+  type PermissionProviderOptions,
+  type StrutvanePermissionProvider,
+} from './policy/provider.ts'
+export {
+  compileRoleMap,
+  type NewModelDefaults,
+  type RoleDefinition,
+  type RoleGrantInfo,
+  type RoleLayer,
+  type RoleMapConfig,
+  type RolePermission,
+} from './policy/roles.ts'
 export {
   type ColumnDef,
   type ColumnType,

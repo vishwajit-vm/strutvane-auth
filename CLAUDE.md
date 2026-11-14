@@ -17,7 +17,7 @@ It is one repo of the **Strutvane** polyrepo ecosystem (one GitHub repo per pack
 ## Status
 
 - **Implemented: `0.1.0-next.0` (Phase 1/2 core), not yet released to npm.** One concept per file in `src/`:
-  - `policy/`: `schema.ts` (model metadata, identifier safety), `filter.ts` (contracts `QueryFilter` constructors + folding), `bind.ts` (actor refs, null-never-matches), `validate.ts` (the shared gate + limits), `evaluate.ts` (in-memory), `builder.ts` (typed `row`/`actor` proxies), `policy.ts` (`definePolicy`, field rules, explain), `provider.ts` (`createPermissionProvider`)
+  - `policy/`: `schema.ts` (model metadata, identifier safety), `filter.ts` (contracts `QueryFilter` constructors + folding), `bind.ts` (actor refs, null-never-matches), `validate.ts` (the shared gate + limits), `evaluate.ts` (in-memory), `builder.ts` (typed `row`/`actor` proxies), `policy.ts` (`definePolicy`, field rules, explain, extra grants), `roles.ts` (`compileRoleMap`: the `config/auth.ts` role map → grants), `provider.ts` (`createPermissionProvider`, role-only resources, `filterableFields`)
   - `sql/`: the Postgres compiler (subpath `@strutvane/auth/sql`)
   - `tenancy/resolver.ts`; `postgres/`: `withTenant`, RLS/role SQL, `tenancyAudit`, `findSessionSet`, Postgres rate-limit store (subpath `/postgres`)
   - `identity/`: `engine.ts` (interface), `native.ts` (in-memory engine), `better-auth.ts` (hardened adapter, subpath `/better-auth`), `rate-limit.ts`, `limiter.ts` (shared per-IP + per-account limiter; missing peer → shared fallback bucket)
@@ -26,7 +26,8 @@ It is one repo of the **Strutvane** polyrepo ecosystem (one GitHub repo per pack
 - Attack-class regression tests live in `test/security-regressions.test.ts` (plus provider-level ones in `test/app-provider.test.ts`).
 - Tests are in `test/`: unit, fast-check property (SQL ≡ in-memory on PGlite, plus mutation checks), RLS on PGlite, the identity contract on the native engine, VAPT (`vapt.test.ts`), type-level (`*.test-d.ts`) and README examples (`readme.test.ts`: update both together). `test/integration/` needs Docker: real PostgreSQL 18 (pooling, session leaks, bypasses, Better Auth contract + TRIPWIRE tests).
 - Gates: `corepack pnpm@12.18.0 run ci` (lint → typecheck → tests + coverage 90/90/85/90 → build) and `corepack pnpm@12.18.0 run test:integration`. `src/identity/better-auth.ts` is excluded from unit coverage; the integration suite covers it.
-- `provider.ts`: the Strutvane app provider (`@strutvane/auth/provider`; policies → `PermissionProviderToken`, `auth.identity` hook, auth endpoints on the native engine). Tests: `test/app-provider.test.ts`.
+- `config.ts`: `defineAuthConfig` / `AuthConfig` (typed `config/auth.ts`). Role names follow docs/07 §2.7: `admin`, `member`, `viewer`, and `owner` (tenant creator, tenant-scoped). Role-map tests: `test/roles.test.ts` (incl. PGlite SQL ≡ in-memory).
+- `provider.ts`: the Strutvane app provider (`@strutvane/auth/provider`; policies + role map → `PermissionProviderToken`, `auth.identity` hook, auth endpoints on the native engine). Tests: `test/app-provider.test.ts`.
 - **Deferred** (see README "Not built yet"): persistent identity in the app provider, password-reset endpoints, screens and installer; CLI commands; SSO/SCIM/MFA/API keys; schema- and database-per-tenant; a Postgres audit sink; Express/Fastify/Nest-specific adapters; policies emitted as permissive RLS.
 - **Temporary:** `pnpm-workspace.yaml` overrides `@strutvane/contracts` and `@strutvane/core` with `link:../contracts` / `link:../core` until both are published. **Never commit it**; the CI `check-deps` guard rejects it.
 - Changesets is in pre mode (`next` tag, `.changeset/pre.json`).

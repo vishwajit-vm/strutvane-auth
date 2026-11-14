@@ -1,7 +1,13 @@
 /** Type-level tests: misuse of the typed predicate builder must not compile. */
 import type { PermissionProvider, QueryFilter } from '@strutvane/contracts'
 import { describe, expectTypeOf, it } from 'vitest'
-import { createPermissionProvider, definePolicy, defineSchema, type Policy } from '../src/index.ts'
+import {
+  createPermissionProvider,
+  defineAuthConfig,
+  definePolicy,
+  defineSchema,
+  type Policy,
+} from '../src/index.ts'
 
 const schema = defineSchema({
   table: 'invoices',
@@ -74,5 +80,35 @@ describe('typed predicate builder', () => {
       // @ts-expect-error no attrs declared
       allow('view', { when: ({ row, actor }) => row.title.eq(actor.attrs.region) })
     })
+  })
+})
+
+describe('defineAuthConfig', () => {
+  it('accepts the documented shape and keeps literal types', () => {
+    const config = defineAuthConfig({
+      registration: true,
+      roles: {
+        admin: { permissions: ['*', { action: 'user.update', scope: 'global' }] },
+        member: { permissions: ['*.view', { action: '*.update', own: true }] },
+        owner: { scope: 'tenant', permissions: ['*'] },
+      },
+      wildcardExclude: ['user'],
+      newModelDefaults: 'inherit-role-patterns',
+      trustedOrigins: ['https://app.example.com'],
+      trustedProxies: [],
+      seedAdmin: { email: undefined, password: undefined, role: 'admin' },
+    })
+    expectTypeOf(config.newModelDefaults).toEqualTypeOf<'inherit-role-patterns'>()
+  })
+
+  it('rejects unknown keys and wrong value shapes', () => {
+    // @ts-expect-error a typo is never silently ignored
+    defineAuthConfig({ rolse: {} })
+    // @ts-expect-error newModelDefaults is a closed set
+    defineAuthConfig({ newModelDefaults: 'open' })
+    // @ts-expect-error a role is { permissions: [...] }, not a bare list
+    defineAuthConfig({ roles: { admin: ['*'] } })
+    // @ts-expect-error scope is 'any' | 'global' | 'tenant'
+    defineAuthConfig({ roles: { admin: { scope: 'platform', permissions: [] } } })
   })
 })

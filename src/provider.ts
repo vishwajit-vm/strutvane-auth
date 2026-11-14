@@ -2,8 +2,10 @@
  * `@strutvane/auth/provider`: the provider `strutvane.config.ts` registers in a Strutvane app.
  *
  * It connects auth to the app only through core (integration map: container tokens + hooks):
- * - binds `PermissionProviderToken` to a provider built from `app/policies/*.policy.ts`
- *   (deny-by-default: an action without a matching rule is refused);
+ * - binds `PermissionProviderToken` to a provider built from `app/policies/*.policy.ts` plus the
+ *   role map of `config/auth.ts` (`roles`, `wildcardExclude`, `newModelDefaults`; see
+ *   `compileRoleMap`): `(policy allows OR role grants) AND NOT policy denies`. Deny-by-default:
+ *   without roles, an action no policy rule allows is refused;
  * - on `http.onRequest` (handler `auth.identity`), resolves the actor (and tenant, with
  *   tenancy on) for every request, and answers the auth endpoints itself:
  *   `POST {api}/auth/sign-up`, `POST {api}/auth/sign-in`, `POST {api}/auth/sign-out`,
@@ -42,6 +44,7 @@ import {
   StrutvaneError,
   UnauthenticatedError,
 } from '@strutvane/core'
+import type { AuthConfig } from './config.ts'
 import { AUTH_ERRORS } from './errors.ts'
 import { attachRequestMeta } from './http/request-meta.ts'
 import type { IdentityResult } from './identity/engine.ts'
@@ -49,28 +52,14 @@ import { createNativeEngine } from './identity/native.ts'
 import { authenticateRequest, problemResponse } from './middleware/core.ts'
 import type { Policy } from './policy/policy.ts'
 import { createPermissionProvider, type StrutvanePermissionProvider } from './policy/provider.ts'
+import { compileRoleMap } from './policy/roles.ts'
 import { headerResolver, sessionResolver } from './tenancy/resolver.ts'
 
-/** `config/auth.ts`, as far as the provider reads it. */
-export interface AppAuthConfig {
-  readonly registration?: boolean
-  readonly seedAdmin?: {
-    readonly email?: string
-    readonly password?: string
-    readonly role?: string
-  }
-  /** Roles every self-registered user gets outside tenants. Default: none. */
-  readonly defaultRoles?: readonly string[]
-  readonly session?: { readonly idleMinutes?: number }
-  /**
-   * Extra origins allowed to call the state-changing auth endpoints (e.g. a SPA served from
-   * another origin: `['https://app.example.com']`). The app URL and the request's own origin are
-   * always allowed.
-   */
-  readonly trustedOrigins?: readonly string[]
-  /** Reverse proxies whose `X-Forwarded-For` may be trusted for rate limiting (addresses or CIDRs). */
-  readonly trustedProxies?: readonly string[]
-}
+/**
+ * `config/auth.ts`, as the provider reads it (the full shape is {@link AuthConfig}; write it with
+ * `defineAuthConfig`).
+ */
+export type AppAuthConfig = AuthConfig
 
 /** `config/tenancy.ts`. */
 export interface AppTenancyConfig {
@@ -245,7 +234,14 @@ export function createAuthProvider(): Provider {
       const cfg = section<AppAuthConfig>(app, 'auth') ?? {}
       const tenancy = section<AppTenancyConfig>(app, 'tenancy')
       const logger = app.make(LoggerToken)
-      permissions = createPermissionProvider(await loadPolicies(root))
+      // The role map is compiled (and validated) before the policies load, so a typo in
+      // config/auth.ts fails the boot with a clear message.
+      const roles = compileRoleMap({
+        ...(cfg.roles ? { roles: cfg.roles } : {}),
+        ...(cfg.wildcardExclude ? { wildcardExclude: cfg.wildcardExclude } : {}),
+        ...(cfg.newModelDefaults ? { newModelDefaults: cfg.newModelDefaults } : {}),
+      })
+      permissions = createPermissionProvider(await loadPolicies(root), { roles })
 
       const seedEmail = cfg.seedAdmin?.email?.toLowerCase()
       const seedRole = cfg.seedAdmin?.role ?? 'admin'

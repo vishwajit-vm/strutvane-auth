@@ -69,6 +69,36 @@ await pool.query(`SELECT * FROM invoices i WHERE ${where.sql} LIMIT 50`, where.p
 
 `row.amout` or `row.amount.eq('x')` don't compile, and every condition is validated against the schema when the policy is defined, so mistakes surface at boot. The in-memory check and the SQL select exactly the same rows: property-based tests compare them against real Postgres.
 
+## Roles: the role map
+
+Policies say what each model allows. The role map (the `roles` block of `config/auth.ts`, docs/07 §4.4) adds the broad, app-wide grants, so you don't repeat "admins may do everything" in every policy:
+
+```ts
+import { compileRoleMap, createPermissionProvider } from '@strutvane/auth'
+
+const roles = compileRoleMap({
+  roles: {
+    admin: { permissions: ['*', { action: 'user.update', scope: 'global' }] },
+    member: { permissions: ['*.viewAny', '*.view', '*.create', { action: '*.update', own: true }] },
+    viewer: { permissions: ['*.viewAny', '*.view'] },
+    owner: { scope: 'tenant', permissions: ['*'] }, // a tenant's creator
+  },
+  wildcardExclude: ['user', 'session', 'role', 'membership', 'auditEvent'],
+  newModelDefaults: 'inherit-role-patterns',
+})
+const permissions = createPermissionProvider([invoicePolicy], { roles })
+```
+
+- `'<resource>.<action>'` patterns, with `*` for either part, are allows for actors holding the role.
+- `{ action, own: true }` only covers records whose `ownerId` is the actor's id. It compiles to SQL, so lists stay filtered, and it never matches on a model without a text/uuid `ownerId` field.
+- `allowed = (policy allows OR role grants) AND NOT policy denies`: a policy `deny` always wins.
+- Wildcards never match `wildcardExclude` resources (grant those by exact name), and inside a tenant they only reach models with a `tenantId` column, so a tenant role can never touch platform-wide data through a pattern.
+- `scope: 'global'` grants count only outside tenants (platform admins); `'tenant'` only inside one.
+- `newModelDefaults: 'admin-only'` limits models nobody names to the full `'*'` grant (partial patterns such as `'*.view'` are then a boot error).
+- No roles configured: exactly the policies, deny by default. Every mistake (unknown option, malformed pattern, `own` typo) fails at boot.
+
+In an app, write `config/auth.ts` with `defineAuthConfig` (typed, unknown keys are compile errors); the provider compiles its role map at boot. `permissions.filterableFields(actor, type)` returns the fields a client may filter and sort on (the readable fields; an unknown resource gets none).
+
 ## Tenancy with row-level security
 
 ```ts
@@ -124,8 +154,9 @@ Per-IP rate limits need the socket peer address (`attachRequestMeta`, done by th
 `create-strutvane` registers `@strutvane/auth/provider` in `strutvane.config.ts`. It plugs into the app only
 through core (container token + hooks), never by importing the framework:
 
-- **Permissions:** loads `app/policies/*.policy.ts` at boot and binds `PermissionProviderToken`
-  (deny-by-default). A policy gets its schema from the model:
+- **Permissions:** loads `app/policies/*.policy.ts` at boot, combines them with the role map of
+  `config/auth.ts` (`roles`, `wildcardExclude`, `newModelDefaults`; see "Roles" above) and binds
+  `PermissionProviderToken` (deny-by-default). A policy gets its schema from the model:
   `definePolicy('invoice', { schema: policySchema(Invoice) }, ({ allow }) => { … })`
   (`policySchema` comes from `@strutvane/framework`).
 - **Identity:** an `http.onRequest` hook (`auth.identity`) resolves the actor (and, with
@@ -139,6 +170,8 @@ through core (container token + hooks), never by importing the framework:
   rotates). `POST` endpoints refuse cross-site requests (`Sec-Fetch-Site: cross-site`, or an `Origin`
   other than the app URL, the request's own origin or `auth.trustedOrigins`) and require
   `application/json`. Bodies are read as a stream and cut off at 16 KiB. Failures are RFC 9457 problems.
+- **Role names** (docs/07 §2.7): `admin`, `member`, `viewer`, and with tenancy `owner` (the tenant's
+  creator, held inside that tenant only).
 - **Roles outside tenants:** the `seedAdmin` account from `config/auth.ts` is created at boot with
   `seedAdmin.role`. The role is bound to that account's id, never to the email, and boot fails if the
   account cannot be created. Self-registered users get `defaultRoles` (none unless configured). Engines

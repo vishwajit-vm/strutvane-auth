@@ -1,7 +1,12 @@
 /** Runs the README quick-start examples against PGlite, so the README always matches the real API. */
 import { PGlite } from '@electric-sql/pglite'
 import { describe, expect, it } from 'vitest'
-import { createPermissionProvider, definePolicy, defineSchema } from '../src/index.ts'
+import {
+  compileRoleMap,
+  createPermissionProvider,
+  definePolicy,
+  defineSchema,
+} from '../src/index.ts'
 import { tenantRlsSql, withTenant } from '../src/postgres/index.ts'
 import { compileToSql } from '../src/sql/index.ts'
 import { actingAs } from '../src/testing/index.ts'
@@ -84,5 +89,49 @@ describe('README: tenancy with row-level security', () => {
     )
     expect(rows).toEqual([{ id: 1, tenant_id: ME }])
     await db.close()
+  })
+})
+
+describe('README: the role map', () => {
+  it('works as documented', async () => {
+    const invoice = defineSchema({
+      table: 'invoices',
+      columns: {
+        ownerId: { column: 'owner_id', type: 'uuid' },
+        tenantId: { column: 'tenant_id', type: 'uuid' },
+        status: { column: 'status', type: 'text' },
+      },
+    })
+    const invoicePolicy = definePolicy('invoice', { schema: invoice }, ({ deny }) => {
+      deny('delete', { when: ({ row }) => row.status.eq('paid'), name: 'paid-is-final' })
+    })
+    const roles = compileRoleMap({
+      roles: {
+        admin: { permissions: ['*', { action: 'user.update', scope: 'global' }] },
+        member: {
+          permissions: ['*.viewAny', '*.view', '*.create', { action: '*.update', own: true }],
+        },
+        viewer: { permissions: ['*.viewAny', '*.view'] },
+        owner: { scope: 'tenant', permissions: ['*'] },
+      },
+      wildcardExclude: ['user', 'session', 'role', 'membership', 'auditEvent'],
+      newModelDefaults: 'inherit-role-patterns',
+    })
+    const permissions = createPermissionProvider([invoicePolicy], { roles })
+    const member = { id: ME, type: 'user' as const, roles: ['member'], attrs: {} }
+    const mine = { type: 'invoice', record: { ownerId: ME, tenantId: null, status: 'draft' } }
+    const theirs = { type: 'invoice', record: { ownerId: OTHER, tenantId: null, status: 'draft' } }
+    expect((await permissions.can(member, 'invoice.update', mine)).allowed).toBe(true)
+    expect((await permissions.can(member, 'invoice.update', theirs)).allowed).toBe(false)
+    const admin = { ...member, roles: ['admin'] }
+    const paid = { type: 'invoice', record: { ownerId: ME, tenantId: null, status: 'paid' } }
+    expect((await permissions.can(admin, 'invoice.delete', paid)).allowed).toBe(false)
+    expect((await permissions.can(admin, 'user.update')).allowed).toBe(true)
+    expect((await permissions.can(admin, 'user.delete')).allowed).toBe(false)
+    expect(await permissions.filterFor(member, 'invoice.update', 'invoice')).toEqual({
+      op: 'eq',
+      field: 'ownerId',
+      value: ME,
+    })
   })
 })

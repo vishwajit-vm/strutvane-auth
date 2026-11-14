@@ -418,3 +418,87 @@ describe('provider hardening (attack classes)', () => {
     expect(empty.response?.status).toBe(400)
   })
 })
+
+describe('role map from config/auth.ts', () => {
+  const roles = {
+    admin: { permissions: ['*', { action: 'user.update', scope: 'global' }] },
+    member: { permissions: ['*.viewAny', '*.view', { action: '*.update', own: true }] },
+    owner: { scope: 'tenant', permissions: ['*', 'customer.viewAny'] },
+  }
+
+  test('role grants combine with app/policies (deny-by-default stays for everything else)', async () => {
+    const { app } = await boot({ auth: { roles, wildcardExclude: ['user'] } })
+    const permissions = app.make(PermissionProviderToken)
+    const admin: Actor = { id: 'a', type: 'user', roles: ['admin'], attrs: {} }
+    const member: Actor = { id: 'm', type: 'user', roles: ['member'], attrs: {} }
+    // The policy alone denies invoice.update to admin; the role map's '*' allows it.
+    expect((await permissions.can(admin, 'invoice.update')).allowed).toBe(true)
+    // No policy for customer: the role map alone decides.
+    expect((await permissions.can(admin, 'customer.export')).allowed).toBe(true)
+    expect((await permissions.can(member, 'customer.viewAny')).allowed).toBe(true)
+    // invoice's schema has no ownerId: the own grant never matches.
+    expect(
+      (await permissions.can(member, 'invoice.update', { type: 'invoice', record: { id: 'x' } }))
+        .allowed,
+    ).toBe(false)
+    // user is wildcard-excluded: only the exact, global grant.
+    expect((await permissions.can(admin, 'user.delete')).allowed).toBe(false)
+    expect((await permissions.can(admin, 'user.update')).allowed).toBe(true)
+    expect((await permissions.can({ ...admin, tenantId: 't1' }, 'user.update')).allowed).toBe(false)
+    expect(await permissions.filterableFields?.(admin, 'invoice')).toEqual(new Set(['id']))
+  })
+
+  test('without roles nothing changes: the seed admin gets nothing the policies do not allow', async () => {
+    const { app } = await boot()
+    const permissions = app.make(PermissionProviderToken)
+    const admin: Actor = { id: 'a', type: 'user', roles: ['admin'], attrs: {} }
+    expect((await permissions.can(admin, 'invoice.update')).allowed).toBe(false)
+    expect((await permissions.can(admin, 'customer.viewAny')).reason).toBe('default-deny:no-policy')
+  })
+
+  test('a tenant creator holds owner, which the role map grants inside that tenant only', async () => {
+    const { app, send } = await boot({
+      auth: { roles },
+      tenancy: { enabled: true, strategy: 'shared' },
+    })
+    const signUp = await send('POST', '/api/v1/auth/sign-up', {
+      body: JSON.stringify({
+        email: 'founder@app.test',
+        password: 'founder-password-123',
+        name: 'F',
+      }),
+    })
+    const cookie = cookieOf(signUp.response)
+    const created = await send('POST', '/api/v1/auth/tenants', {
+      body: JSON.stringify({ name: 'Acme', slug: 'acme' }),
+      cookie,
+    })
+    expect(created.response?.status).toBe(201)
+    const tenant = (await created.response?.json()) as { tenantId: string }
+    const tenantId = tenant.tenantId
+    const switched = await send('POST', '/api/v1/auth/switch-tenant', {
+      body: JSON.stringify({ tenantId }),
+      cookie: cookieOf(created.response),
+    })
+    const body = (await switched.response?.json()) as { actor: Actor }
+    const actor = body.actor
+    expect(actor).toMatchObject({ roles: ['owner'], tenantId })
+    const permissions = app.make(PermissionProviderToken)
+    const full: Actor = { ...actor, attrs: {} }
+    // invoice's schema has no tenantId column: a tenant wildcard never reaches it.
+    expect((await permissions.can(full, 'invoice.viewAny')).allowed).toBe(false)
+    // An exact grant is deliberate: it counts inside the tenant, and never outside (scope tenant).
+    expect((await permissions.can(full, 'customer.viewAny')).allowed).toBe(true)
+    const { tenantId: _t, ...outside } = full
+    expect((await permissions.can(outside, 'customer.viewAny')).allowed).toBe(false)
+  })
+
+  test.each([
+    [{ roles: { member: { permissions: [{ action: '*.update', onw: true }] } } }, /onw/],
+    [{ roles: { Admin: { permissions: ['*'] } } }, /invalid role name/],
+    [{ newModelDefaults: 'admin-only', roles: { m: { permissions: ['*.view'] } } }, /admin-only/],
+    [{ wildcardExclude: ['user'], roles: { a: { permissions: ['user.*'] } } }, /by name/],
+  ])('a malformed role map fails the boot (%#)', async (auth, message) => {
+    await expect(boot({ auth })).rejects.toThrow(message)
+  })
+})
