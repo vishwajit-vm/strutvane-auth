@@ -1,6 +1,7 @@
 // Engine selection for apps, the admin API and the contributed commands, without Docker (the
 // PostgreSQL success paths run in test/integration/app-identity.test.ts).
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { type AddressInfo, createServer, type Socket } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Actor } from '@strutvane/contracts'
@@ -110,6 +111,35 @@ describe('createAppIdentity: which engine an app runs on', () => {
     // The first import of better-auth in a process can take 20+ s on a cold or busy machine.
   }, 120_000)
 
+  test('a database that accepts connections but never answers fails the boot instead of hanging', async () => {
+    // A black-holed or wedged server: TCP connects, the PostgreSQL handshake never completes.
+    const sockets = new Set<Socket>()
+    const silent = createServer((socket) => {
+      sockets.add(socket)
+      socket.on('error', () => undefined)
+    })
+    await new Promise<void>((resolve) => silent.listen(0, '127.0.0.1', resolve))
+    const { port } = silent.address() as AddressInfo
+    await import('../src/identity/better-auth.ts') // keep the slow first import out of the timing
+    try {
+      const outcome = await Promise.race([
+        createAppIdentity({
+          ...base,
+          auth: { session: { driver: 'database' }, secret: SECRET },
+          database: { default: 'postgres', connection: { host: '127.0.0.1', port, user: 'u' } },
+        }).then(
+          () => 'booted',
+          () => 'failed',
+        ),
+        new Promise((resolve) => setTimeout(() => resolve('hung'), 30_000)),
+      ])
+      expect(outcome).toBe('failed')
+    } finally {
+      for (const socket of sockets) socket.destroy()
+      await new Promise((resolve) => silent.close(resolve))
+    }
+  }, 120_000)
+
   test('pool options follow config/database.ts; ssl: true verifies certificates', () => {
     expect(isPostgres({ default: 'azure-postgres' })).toBe(true)
     expect(isPostgres({ connection: { driver: 'postgres' } })).toBe(true)
@@ -135,6 +165,7 @@ describe('createAppIdentity: which engine an app runs on', () => {
       ssl: { rejectUnauthorized: true },
       max: 5,
       application_name: 'strutvane-auth',
+      connectionTimeoutMillis: 10_000,
     })
     expect(
       poolOptionsFrom({

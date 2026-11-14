@@ -12,7 +12,9 @@
  * Failure scenarios (each stops the boot with the fix in the message):
  * - `better-auth` or `pg` is not installed;
  * - the auth tables do not exist yet (`sv migrate` applies the package migration in `migrations/`);
- * - the secret is missing or shorter than 32 characters.
+ * - the secret is missing or shorter than 32 characters;
+ * - the database accepts no connection within 10 s (a black-holed or wedged server fails the boot
+ *   instead of hanging it; at runtime the same timeout makes requests fail closed).
  *
  * The pool is closed by {@link AppIdentity.close}; a failed boot closes it too.
  *
@@ -64,6 +66,9 @@ export class IdentitySetupError extends Error {
 /** Table for the shared rate-limit counters (see `postgresRateLimitStore`). */
 export const RATE_LIMIT_TABLE = 'strutvane_rate_limits'
 
+/** How long the auth pool waits for a database connection before failing (fail closed). */
+const CONNECT_TIMEOUT_MS = 10_000
+
 const str = (v: unknown): string | undefined => (typeof v === 'string' && v !== '' ? v : undefined)
 const num = (v: unknown): number | undefined =>
   typeof v === 'number' && Number.isFinite(v)
@@ -90,6 +95,9 @@ export function poolOptionsFrom(db: AppDatabaseSection | undefined): Record<stri
     // Auth traffic is light: a small pool next to the framework's own.
     max: Math.min(num(pool.max) ?? 5, 5),
     application_name: 'strutvane-auth',
+    // node-postgres waits forever for a connection by default: a black-holed or wedged database
+    // would hang the boot and every authenticated request. Give up and fail closed instead.
+    connectionTimeoutMillis: CONNECT_TIMEOUT_MS,
   }
   if (str(c['url'])) out['connectionString'] = str(c['url'])
   for (const key of ['host', 'database', 'user', 'password'] as const)
