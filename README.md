@@ -164,7 +164,8 @@ through core (container token + hooks), never by importing the framework:
   for tenant-less service actors, and anonymous requests are never scoped to a tenant. The hook's
   `clientAddress` (socket peer) keys the per-IP rate limits; set `auth.trustedProxies` when the app
   runs behind a reverse proxy.
-- **Endpoints** under the API base path: `POST /auth/sign-up` (unless `registration: false`),
+- **Endpoints** under the API base path: `POST /auth/sign-up` (only with `registration: true`;
+  public sign-up is off by default),
   `POST /auth/sign-in`, `POST /auth/sign-out`, `GET /auth/me`, and for tenancy `POST|GET /auth/tenants`
   and `POST /auth/switch-tenant` (members only; the creator becomes `owner`, and the session token
   rotates). `POST` endpoints refuse cross-site requests (`Sec-Fetch-Site: cross-site`, or an `Origin`

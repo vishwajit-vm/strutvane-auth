@@ -328,7 +328,8 @@ export function createAuthProvider(): Provider {
                 assertSameSite(p.request, trustedOrigins)
               switch (route) {
                 case 'POST /sign-up': {
-                  if (cfg.registration === false)
+                  // Deny by default: only an explicit `registration: true` opens public sign-up.
+                  if (cfg.registration !== true)
                     return answer(problemResponse(new StrutvaneError('FORBIDDEN', { status: 403 })))
                   const body = await readJson(p.request)
                   const input = {

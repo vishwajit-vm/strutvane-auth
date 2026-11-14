@@ -39,16 +39,20 @@ async function boot(
   options: { auth?: Record<string, unknown>; tenancy?: Record<string, unknown> } = {},
 ) {
   const root = await projectWith({ 'app/policies/invoice.policy.ts': POLICY })
+  // Tests that sign up opt in to public registration (it is off by default). Passing a key as
+  // `undefined` removes it, so a test can model a config/auth.ts that omits the key entirely.
+  const auth: Record<string, unknown> = {
+    registration: true,
+    seedAdmin: { email: 'Admin@App.test', password: ADMIN_PASSWORD, role: 'admin' },
+    session: { idleMinutes: 60 },
+    ...options.auth,
+  }
+  for (const [key, value] of Object.entries(auth)) if (value === undefined) delete auth[key]
   const app = createApp({
     config: {
       app: { root, url: 'http://localhost:3000' },
       api: { prefix: '/api', version: 'v1' },
-      auth: {
-        registration: true,
-        seedAdmin: { email: 'Admin@App.test', password: ADMIN_PASSWORD, role: 'admin' },
-        session: { idleMinutes: 60 },
-        ...options.auth,
-      },
+      auth,
       ...(options.tenancy ? { tenancy: options.tenancy } : {}),
     },
     providers: [createAuthProvider()],
@@ -161,6 +165,16 @@ describe('@strutvane/auth/provider', () => {
       body: JSON.stringify({ email: 'x@app.test', password: 'a-long-enough-password', name: 'X' }),
     })
     expect(refused.response?.status).toBe(403)
+  })
+
+  test('refuses sign-up when config/auth.ts omits registration (deny by default)', async () => {
+    const { app, send } = await boot({ auth: { registration: undefined } })
+    expect(app.config('auth')).not.toHaveProperty('registration')
+    const refused = await send('POST', '/api/v1/auth/sign-up', {
+      body: JSON.stringify({ email: 'x@app.test', password: 'a-long-enough-password', name: 'X' }),
+    })
+    expect(refused.response?.status).toBe(403)
+    expect(await refused.response?.json()).toMatchObject({ code: 'FORBIDDEN', status: 403 })
   })
 
   test('rejects malformed and oversized bodies and unknown auth routes', async () => {

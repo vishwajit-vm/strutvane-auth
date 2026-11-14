@@ -44,7 +44,11 @@ export interface AuthConfig {
   readonly methods?: readonly string[]
   /** The signing secret (from `AUTH_SECRET`; never hard-code it). */
   readonly secret?: string | undefined
-  /** Whether anyone may self-register. Default `true`. */
+  /**
+   * Whether anyone may self-register (`POST /auth/sign-up`). Default `false`: sign-up is open only
+   * when this is exactly `true`. Deny-by-default, so an app that omits the key (or loads an unset or
+   * mistyped env value) never exposes public registration by accident.
+   */
   readonly registration?: boolean | undefined
   readonly session?: {
     readonly driver?: string | undefined
