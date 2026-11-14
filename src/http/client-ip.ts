@@ -6,7 +6,8 @@
  *
  * 1. Start from the TCP peer address (see `request-meta.ts`), which the client cannot forge.
  * 2. Only if that peer is one of YOUR trusted proxies, read `X-Forwarded-For` from right to left,
- *    skipping further trusted proxies; the first untrusted address is the client.
+ *    skipping further trusted proxies; the first untrusted address is the client. A hop may carry
+ *    a source port (`203.0.113.7:51234`, `[2001:db8::7]:443`); the port is ignored.
  * 3. Otherwise the peer address IS the client, whatever the headers say.
  *
  * @module
@@ -64,6 +65,21 @@ export function trustedProxies(entries: readonly string[] = []): TrustedProxies 
 
 const NONE: TrustedProxies = { has: () => false }
 
+const V4_WITH_PORT = /^(\d{1,3}(?:\.\d{1,3}){3}):(\d{1,5})$/
+const V6_WITH_PORT = /^\[([0-9A-Fa-f:.%a-zA-Z]+)\]:(\d{1,5})$/
+
+/**
+ * Drop a source port from one `X-Forwarded-For` hop (`203.0.113.7:51234`, `[2001:db8::7]:443`).
+ * Some proxies (e.g. Azure App Service) append it. Without this, such hops were treated as
+ * malformed and every client behind the proxy shared the proxy's own rate-limit bucket. Only a
+ * valid port (0-65535) is removed; anything else is left for `normalizeIp` to reject.
+ */
+function withoutPort(hop: string): string {
+  const match = V4_WITH_PORT.exec(hop) ?? V6_WITH_PORT.exec(hop)
+  if (!match?.[1] || match[2] === undefined || Number(match[2]) > 65_535) return hop
+  return match[1]
+}
+
 /**
  * The client IP for a request, or `undefined` when the server never attached a peer address
  * (callers must then fall back to limits that don't need an IP, never to a shared bucket).
@@ -80,7 +96,7 @@ export function resolveClientIp(
     .map((h) => h.trim())
     .filter((h) => h.length > 0)
   for (let i = hops.length - 1; i >= 0; i--) {
-    const hop = normalizeIp(hops[i])
+    const hop = normalizeIp(withoutPort(hops[i] ?? ''))
     // A malformed hop means the chain can't be trusted beyond this point: use the last good proxy.
     if (!hop) return peer
     if (!proxies.has(hop)) return hop

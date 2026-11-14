@@ -4,12 +4,14 @@
  * hidden-field oracles, empty role lists, null actor values under negation, role-namespace
  * confusion), record masking, audit redaction and log-safe error reasons.
  */
+
+import { isIP } from 'node:net'
 import type { Actor, QueryFilter } from '@strutvane/contracts'
 import fc from 'fast-check'
 import { describe, expect, it } from 'vitest'
 import { diffChanges } from '../src/audit/audit.ts'
 import { FieldNotLoadedError, InvalidFilterError, PolicyDefinitionError } from '../src/errors.ts'
-import { rateLimitSubject, trustedProxies } from '../src/http/client-ip.ts'
+import { rateLimitSubject, resolveClientIp, trustedProxies } from '../src/http/client-ip.ts'
 import { attachRequestMeta } from '../src/http/request-meta.ts'
 import { createIdentityLimiter, UNKNOWN_PEER } from '../src/identity/limiter.ts'
 import { createNativeEngine } from '../src/identity/native.ts'
@@ -153,6 +155,52 @@ describe('rate-limit evasion', () => {
     ).toBeGreaterThan(0)
     // A different /64 is a different client.
     expect(await limited(withPeer('2001:db8:1:3::1'), 'signin', rule)).toBeUndefined()
+  })
+
+  it('forwarded hops written as address:port count per client, never in the proxy bucket', async () => {
+    const proxy = '10.0.0.5'
+    const proxies = trustedProxies([proxy])
+    const via = (xff: string) =>
+      attachRequestMeta(new Request('http://x.test/', { headers: { 'x-forwarded-for': xff } }), {
+        remoteAddress: proxy,
+      })
+    // Some proxies (e.g. Azure App Service) append the client's source port.
+    expect(resolveClientIp(via('203.0.113.7:51234'), proxies)).toBe('203.0.113.7')
+    expect(resolveClientIp(via('[2001:db8::7]:443'), proxies)).toBe('2001:db8::7')
+    expect(resolveClientIp(via('198.51.100.1, 203.0.113.8:80'), proxies)).toBe('203.0.113.8')
+    // A trusted hop with a port is still skipped as a proxy.
+    expect(resolveClientIp(via('203.0.113.9:1, 10.0.0.5:8080'), proxies)).toBe('203.0.113.9')
+    // Malformed ports are not addresses: the chain stops at the last good proxy.
+    for (const bad of [
+      '203.0.113.7:',
+      '203.0.113.7:99999',
+      '203.0.113.7:x',
+      '2001:db8::7:80:1:2:3:4',
+    ])
+      expect(resolveClientIp(via(bad), proxies)).toBe(proxy)
+    // Two clients behind the proxy no longer share one bucket.
+    const limited = createIdentityLimiter({
+      store: memoryRateLimitStore(),
+      proxies,
+      engine: 'test',
+    })
+    const one = { windowSeconds: 60, max: 1 }
+    expect(await limited(via('203.0.113.20:1000'), 'signin', one)).toBeUndefined()
+    expect(await limited(via('203.0.113.21:1000'), 'signin', one)).toBeUndefined()
+    expect(await limited(via('203.0.113.20:2000'), 'signin', one)).toBeGreaterThan(0)
+    // Fuzz: any header value resolves to the peer or to a real IP address, and never throws.
+    fc.assert(
+      fc.property(fc.string({ maxLength: 80 }), (xff) => {
+        let request: Request
+        try {
+          request = via(xff)
+        } catch {
+          return // not a legal header value; a server never builds such a Request
+        }
+        const ip = resolveClientIp(request, proxies)
+        expect(ip === proxy || isIP(ip ?? '') !== 0).toBe(true)
+      }),
+    )
   })
 
   it('rateLimitSubject: IPv4 per address, IPv6 per /64, including :: and embedded IPv4 forms', () => {
