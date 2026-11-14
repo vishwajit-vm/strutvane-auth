@@ -329,6 +329,39 @@ describe('persistent identity in the app provider', () => {
     }
   })
 
+  test('the shipped package migration creates exactly what Better Auth needs, idempotently', async () => {
+    const fresh = await createDatabase()
+    try {
+      const file = await readFile(
+        join(
+          import.meta.dirname,
+          '../../migrations/postgres/20261114000000_strutvane_auth_identity.sql',
+        ),
+        'utf8',
+      )
+      const statements = file.split('--> statement-breakpoint')
+      // Twice: IF NOT EXISTS keeps it safe for apps that created the tables another way.
+      for (let i = 0; i < 2; i++) for (const s of statements) await fresh.admin.query(s)
+      const { createAppIdentity } = await import('../../src/identity/app-identity.ts')
+      const identity = await createAppIdentity({
+        auth: { secret: SECRET, session: { driver: 'database' } },
+        appUrl: APP,
+        database: { default: 'postgres', connection: { url: fresh.url() } },
+        logger: { warn: () => undefined, error: () => undefined },
+        deliverPasswordReset: async () => undefined,
+      })
+      try {
+        // Better Auth finds nothing missing (a version bump that changes its schema fails here).
+        expect((await identity.compileMigrations?.())?.replace(/[\s;]/g, '')).toBe('')
+        expect(await identity.tablesMissing?.()).toBe(false)
+      } finally {
+        await identity.close()
+      }
+    } finally {
+      await fresh.drop()
+    }
+  })
+
   test('the admin API refuses an in-memory identity (writes would vanish)', async () => {
     const memRoot = await mkdtemp(join(tmpdir(), 'sv-auth-mem-'))
     try {

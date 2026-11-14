@@ -65,6 +65,15 @@ export function toMigrationFile(sql: string, created: Date): string | undefined 
     .split(/;\s*(?:\r?\n|$)/)
     .map((s) => s.trim())
     .filter((s) => s.length > 0)
+    // Idempotent, like the package migration: either file may run first on a fresh database.
+    .map((s) =>
+      s
+        .replace(/^create table "/i, 'create table if not exists "')
+        .replace(
+          /^create (unique )?index "/i,
+          (_m, unique: string | undefined) => `create ${unique ?? ''}index if not exists "`,
+        ),
+    )
   if (statements.length === 0) return undefined
   return [
     '-- strutvane:migration',

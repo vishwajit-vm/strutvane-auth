@@ -11,7 +11,7 @@
  *
  * Failure scenarios (each stops the boot with the fix in the message):
  * - `better-auth` or `pg` is not installed;
- * - the auth tables do not exist yet (`sv auth:migration`, then `sv migrate`);
+ * - the auth tables do not exist yet (`sv migrate` applies the package migration in `migrations/`);
  * - the secret is missing or shorter than 32 characters.
  *
  * The pool is closed by {@link AppIdentity.close}; a failed boot closes it too.
@@ -200,7 +200,7 @@ export async function createAppIdentity(options: AppIdentityOptions): Promise<Ap
     }
     if (options.verifyTables !== false && (await tablesMissing()))
       throw new IdentitySetupError(
-        'The auth tables do not exist yet. Run `pnpm sv auth:migration` (writes the migration), then `pnpm sv migrate`.',
+        'The auth tables do not exist yet. Run `pnpm sv migrate` (@strutvane/auth ships them as a package migration; without @strutvane/framework, `pnpm sv auth:migration` writes them out).',
       )
     return {
       driver: 'database',

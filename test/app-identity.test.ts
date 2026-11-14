@@ -246,7 +246,7 @@ describe('admin API and commands without a persistent store', () => {
     )
     expect(file).toContain('-- strutvane:migration')
     expect(file).toContain(
-      'create table "a" (x int);\n--> statement-breakpoint\ncreate index "i" on "a" (x);',
+      'create table if not exists "a" (x int);\n--> statement-breakpoint\ncreate index if not exists "i" on "a" (x);',
     )
   })
 })

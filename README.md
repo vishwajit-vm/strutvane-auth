@@ -187,9 +187,11 @@ through core (container token + hooks), never by importing the framework:
   `AUTH_SESSION_DRIVER`) on PostgreSQL, the provider runs the hardened Better Auth engine on the
   app's own database: accounts, sessions, tenants and memberships survive restarts and are shared by
   every process, and rate-limit counters live in `strutvane_rate_limits`. It needs the `better-auth`
-  and `pg` packages and a 32+ character `secret`. Create the tables once with
-  `pnpm sv auth:migration` (writes `database/migrations/<ts>_auth_identity.sql`, only what is
-  missing) and `pnpm sv migrate`; boot fails with that instruction while they are missing.
+  and `pg` packages and a 32+ character `secret`. The tables come with `pnpm sv migrate`: the package
+  ships them as a package migration (`migrations/postgres/`, idempotent) that
+  `@strutvane/framework` applies with the app's own. Boot fails with that instruction while they
+  are missing. `pnpm sv auth:migration` writes them into `database/migrations` instead (apps
+  without the framework's migrator, or a schema upgrade).
   `driver: 'memory'`, or any other database, uses the native in-memory engine (development and
   tests; a warning says so).
 - **Members:** a tenant's owners list, add and remove members over HTTP:
