@@ -10,7 +10,7 @@
  */
 import type { FilterScalar, QueryFilter } from '@strutvane/contracts'
 import { FieldNotLoadedError } from '../errors.ts'
-import { type ColumnType, type ModelSchema, resolveField } from './schema.ts'
+import { type ColumnType, fitsType, type ModelSchema, resolveField } from './schema.ts'
 import { type FilterLimits, foldAscii, validateFilter } from './validate.ts'
 
 /** A record as loaded for a check. To-one relations are nested objects, or `null` (no related row). */
@@ -25,8 +25,24 @@ const never = (reason: string): never => {
  * - A relation that is `null` yields `null` for its fields (matches the SQL scalar subquery, which
  *   returns NULL when no related row exists).
  * - A field or relation that is `undefined` was not loaded: throw instead of guessing.
+ * - A non-null value must fit the column type exactly (a `bigint`/`numeric` column read by node-pg
+ *   as a string, `0`/`1` for a boolean, a non-canonical uuid…). Comparing such a value with `===`
+ *   or ordering it would silently disagree with SQL and could turn a deny into an allow, so the
+ *   check fails closed, loudly.
  */
-function read(record: RecordValue, path: string): unknown {
+function read(record: RecordValue, path: string, schema: ModelSchema): unknown {
+  const value = readRaw(record, path)
+  if (value === null) return null
+  const type = resolveField(schema, path, never).column.type
+  if (!fitsType(value, type)) {
+    throw new FieldNotLoadedError(
+      `Field "${path}" was loaded as a ${typeof value}, which does not fit column type ${type}`,
+    )
+  }
+  return value
+}
+
+function readRaw(record: RecordValue, path: string): unknown {
   const dot = path.indexOf('.')
   const head = dot < 0 ? path : path.slice(0, dot)
   const first = Object.hasOwn(record, head) ? record[head] : undefined
@@ -78,19 +94,19 @@ function evalNode(f: QueryFilter, r: RecordValue, schema: ModelSchema): boolean 
     case 'not':
       return !evalNode(f.filter, r, schema)
     case 'isNull':
-      return read(r, f.field) === null
+      return read(r, f.field, schema) === null
     case 'isNotNull':
-      return read(r, f.field) !== null
+      return read(r, f.field, schema) !== null
     case 'eq':
     case 'ne': {
       const type = resolveField(schema, f.field, never).column.type
-      const equal = same(read(r, f.field), f.value as FilterScalar, type)
+      const equal = same(read(r, f.field, schema), f.value as FilterScalar, type)
       return f.op === 'eq' ? equal : !equal
     }
     case 'in':
     case 'nin': {
       const type = resolveField(schema, f.field, never).column.type
-      const v = read(r, f.field)
+      const v = read(r, f.field, schema)
       const found = f.values.some((x) => same(v, x as FilterScalar, type))
       return f.op === 'in' ? found : !found
     }
@@ -98,7 +114,7 @@ function evalNode(f: QueryFilter, r: RecordValue, schema: ModelSchema): boolean 
     case 'gte':
     case 'lt':
     case 'lte': {
-      const a = read(r, f.field)
+      const a = read(r, f.field, schema)
       const b = f.value
       if (typeof a !== 'number' || typeof b !== 'number') return false
       if (f.op === 'gt') return a > b
@@ -107,7 +123,7 @@ function evalNode(f: QueryFilter, r: RecordValue, schema: ModelSchema): boolean 
       return a <= b
     }
     case 'between': {
-      const a = read(r, f.field)
+      const a = read(r, f.field, schema)
       if (typeof a !== 'number' || typeof f.from !== 'number' || typeof f.to !== 'number')
         return false
       return a >= f.from && a <= f.to
@@ -115,7 +131,7 @@ function evalNode(f: QueryFilter, r: RecordValue, schema: ModelSchema): boolean 
     case 'contains':
     case 'startsWith':
     case 'endsWith':
-      return textOp(f.op, read(r, f.field), f.value, f.caseSensitive === true)
+      return textOp(f.op, read(r, f.field, schema), f.value, f.caseSensitive === true)
   }
 }
 

@@ -81,7 +81,15 @@ const { up } = tenantRlsSql({ table: 'app.invoices', runtimeRole: 'app_user' })
 const rows = await withTenant(pool, tenantId, async (client) => (await client.query('SELECT * FROM app.invoices')).rows)
 ```
 
-Tenants are resolved per request by a chain: `subdomainResolver`, `pathResolver`, `headerResolver` (only for callers you trust) and `sessionResolver`. The middleware refuses a request for a tenant the actor isn't a member of with 403, and Postgres RLS enforces the boundary in the database. Run `tenancyAudit(pool)` in CI or `sv doctor`: it flags tables without RLS, permissive-only policies, runtime roles that bypass RLS or own tables, definer views and `SECURITY DEFINER` functions.
+Tenants are resolved per request by a chain: `subdomainResolver`, `pathResolver`, `headerResolver` (only for callers you trust) and `sessionResolver`. The middleware refuses a request for a tenant the actor isn't a member of with 403, and Postgres RLS enforces the boundary in the database. Anonymous requests get no tenant unless you set `tenancy.allowAnonymousTenant` (`true` admits the `subdomain` and `path` resolvers; a list of resolver names is an explicit opt-in).
+
+Run `tenancyAudit(pool)` in CI or `sv doctor`. It flags:
+- tables without RLS, or without a RESTRICTIVE `FOR ALL` policy for every role that checks the tenant column against the tenant setting in both USING and WITH CHECK;
+- runtime roles that bypass RLS or own tables, directly or through role membership;
+- role- or database-level defaults for the tenant setting;
+- definer views and `SECURITY DEFINER` functions.
+
+`relationKeyAudit(pool, schemas)` checks that every policy relation points at a unique key (relation fields compile to scalar subqueries). `withTenant` rejects with `TransactionAbortedError` when Postgres rolled the transaction back because a statement inside it failed and the error was caught.
 
 ## Identity and middleware
 
@@ -109,6 +117,8 @@ app.get('/me', (c) => c.json(c.get('actor')))
 
 Every engine implements `IdentityEngine` and returns results, never throws: stable error codes, cookies as headers, and `authenticate(request) → { actor, headers }` that fails closed. The **native engine** (`createNativeEngine`) is in-memory and meant for development and tests.
 
+Per-IP rate limits need the socket peer address (`attachRequestMeta`, done by the `/node` and `/hono` adapters, or `clientAddress` on the `http.onRequest` hook). A request without one counts against a single shared fallback bucket, and the engine warns once through its `logger`. Set `allowMissingPeer: true` only for hosts that knowingly have no socket; the per-account limit applies either way.
+
 ## In a Strutvane app
 
 `create-strutvane` registers `@strutvane/auth/provider` in `strutvane.config.ts`. It plugs into the app only
@@ -119,14 +129,20 @@ through core (container token + hooks), never by importing the framework:
   `definePolicy('invoice', { schema: policySchema(Invoice) }, ({ allow }) => { … })`
   (`policySchema` comes from `@strutvane/framework`).
 - **Identity:** an `http.onRequest` hook (`auth.identity`) resolves the actor (and, with
-  `config/tenancy.ts` `enabled: true`, the tenant: session first, then a member-checked `X-Tenant-Id`).
+  `config/tenancy.ts` `enabled: true`, the tenant from the session). `X-Tenant-Id` is honoured only
+  for tenant-less service actors, and anonymous requests are never scoped to a tenant. The hook's
+  `clientAddress` (socket peer) keys the per-IP rate limits; set `auth.trustedProxies` when the app
+  runs behind a reverse proxy.
 - **Endpoints** under the API base path: `POST /auth/sign-up` (unless `registration: false`),
   `POST /auth/sign-in`, `POST /auth/sign-out`, `GET /auth/me`, and for tenancy `POST|GET /auth/tenants`
-  and `POST /auth/switch-tenant` (members only; the creator becomes `owner`). Bodies are capped at 16 KiB;
-  failures are RFC 9457 problems.
+  and `POST /auth/switch-tenant` (members only; the creator becomes `owner`, and the session token
+  rotates). `POST` endpoints refuse cross-site requests (`Sec-Fetch-Site: cross-site`, or an `Origin`
+  other than the app URL, the request's own origin or `auth.trustedOrigins`) and require
+  `application/json`. Bodies are read as a stream and cut off at 16 KiB. Failures are RFC 9457 problems.
 - **Roles outside tenants:** the `seedAdmin` account from `config/auth.ts` is created at boot with
-  `seedAdmin.role`; self-registered users get `defaultRoles` (none unless configured). Engines can
-  supply them through the new `globalRoles` option of `createNativeEngine`.
+  `seedAdmin.role`. The role is bound to that account's id, never to the email, and boot fails if the
+  account cannot be created. Self-registered users get `defaultRoles` (none unless configured). Engines
+  can supply them through the `globalRoles` option of `createNativeEngine`.
 
 The provider uses the native engine: accounts and sessions live in memory and are lost on restart,
 so it is for development and tests. Persistent identity (Better Auth on Postgres) is wired by hand
@@ -135,13 +151,17 @@ for now (`@strutvane/auth/better-auth`).
 ## Security notes
 
 - **Deny by default, deny wins, fail closed.** No matching rule denies. A record missing a field the policy needs throws instead of guessing. Without a record, record-dependent actions are denied (`record-required:<rule>`).
-- **NULL-safe, two-valued semantics (ADR-0008).** `ne` matches rows with no value, so `deny … when status ne 'draft'` also protects rows without a status. A null actor attribute never matches null rows.
+- **NULL-safe, two-valued semantics (ADR-0008).** `ne` matches rows with no value, so `deny … when status ne 'draft'` also protects rows without a status. A null actor attribute never matches null rows, and in allow rules it never widens access either: under `ne`, `nin` or `not` the condition part binds to "no match".
+- **Records must be well-typed.** A loaded value that doesn't fit its column type (a `bigint` read as a string, `0`/`1` for a boolean, a non-canonical uuid) makes `can()` throw instead of guessing.
+- **Hidden fields stay hidden.** `maskRecord` copies only readable schema fields. Validate untrusted filters and sorts with `validateFilter(filter, schema, { allowedFields: policy.filterableFields(actor) })`, so a field the actor can't read can't be probed one comparison at a time. Pass `maskFor: policy` to `diffChanges` / `recordAudit` to redact those fields in audit diffs.
+- **Role lists are explicit.** `role: []` is a definition error, never "everyone". Use `scope: 'global'` on platform-admin rules so a tenant's own `admin` role can't match them (`'tenant'` for the reverse).
+- **Text compares bytewise in SQL** (`COLLATE "C"`), so case- or accent-insensitive column collations can't make SQL disagree with in-memory checks. Build indexes used by policy filters `COLLATE "C"`, or set `textCollation: 'database'` if every text column is deterministic.
 - **No value ever reaches SQL text.** Values are typed parameters, identifiers come only from the schema and are pattern-checked, and text search never uses `LIKE`.
 - **Untrusted filters are bounded**: node count, depth, list length and string length are capped before any work is done.
-- **Rate limits can't be bypassed with a forged `X-Forwarded-For`.** The client IP comes from the socket peer and only trusted proxies are believed. Sign-in is limited per IP and per account; requests without a known IP never share one bucket.
-- **Sessions:** a new session on every sign-in (no fixation), server-side revocation, all sessions revoked on password reset, constant-time reset start (no user enumeration), `HttpOnly; SameSite=Lax` cookies that are `Secure` on https.
+- **Rate limits can't be bypassed with a forged `X-Forwarded-For`.** The client IP comes from the socket peer and only trusted proxies are believed. Sign-in is limited per IP (IPv6 per `/64`) and per account. Requests without a known IP share one fallback bucket instead of skipping the limit. The in-memory store evicts expired windows first and never evicts per-account counters before per-IP ones.
+- **Sessions:** a new session on every sign-in (no fixation), token rotation when privileges change (tenant creation and switch), server-side revocation, all sessions and outstanding reset links revoked on password reset, constant-time reset start (no user enumeration), `HttpOnly; SameSite=Lax` cookies that are `Secure` on https.
 - **Audit records redact** passwords, tokens and secrets (plus any fields you name), keeping only the fact that they changed.
-- Attack-style tests (IDOR, role tampering, cross-tenant CRUD, header spoofing, SQL injection, session fixation, hostile filters) run on every CI build. See [`test/vapt.test.ts`](test/vapt.test.ts).
+- Attack-style tests (IDOR, role tampering, cross-tenant CRUD, header spoofing, SQL injection, session fixation, hostile filters) run on every CI build. See [`test/vapt.test.ts`](test/vapt.test.ts) and [`test/security-regressions.test.ts`](test/security-regressions.test.ts).
 
 ## Not built yet
 

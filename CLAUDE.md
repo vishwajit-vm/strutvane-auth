@@ -20,9 +20,10 @@ It is one repo of the **Strutvane** polyrepo ecosystem (one GitHub repo per pack
   - `policy/`: `schema.ts` (model metadata, identifier safety), `filter.ts` (contracts `QueryFilter` constructors + folding), `bind.ts` (actor refs, null-never-matches), `validate.ts` (the shared gate + limits), `evaluate.ts` (in-memory), `builder.ts` (typed `row`/`actor` proxies), `policy.ts` (`definePolicy`, field rules, explain), `provider.ts` (`createPermissionProvider`)
   - `sql/`: the Postgres compiler (subpath `@strutvane/auth/sql`)
   - `tenancy/resolver.ts`; `postgres/`: `withTenant`, RLS/role SQL, `tenancyAudit`, `findSessionSet`, Postgres rate-limit store (subpath `/postgres`)
-  - `identity/`: `engine.ts` (interface), `native.ts` (in-memory engine), `better-auth.ts` (hardened adapter, subpath `/better-auth`), `rate-limit.ts`
+  - `identity/`: `engine.ts` (interface), `native.ts` (in-memory engine), `better-auth.ts` (hardened adapter, subpath `/better-auth`), `rate-limit.ts`, `limiter.ts` (shared per-IP + per-account limiter; missing peer → shared fallback bucket)
   - `http/`: request meta (socket peer, unforgeable) and trusted-proxy client IP
   - `audit/audit.ts`; `middleware/`: `core.ts`, `hono.ts`, `node.ts`; `testing/`: contract suite + helpers (subpath `/testing`)
+- Attack-class regression tests live in `test/security-regressions.test.ts` (plus provider-level ones in `test/app-provider.test.ts`).
 - Tests are in `test/`: unit, fast-check property (SQL ≡ in-memory on PGlite, plus mutation checks), RLS on PGlite, the identity contract on the native engine, VAPT (`vapt.test.ts`), type-level (`*.test-d.ts`) and README examples (`readme.test.ts`: update both together). `test/integration/` needs Docker: real PostgreSQL 18 (pooling, session leaks, bypasses, Better Auth contract + TRIPWIRE tests).
 - Gates: `corepack pnpm@12.18.0 run ci` (lint → typecheck → tests + coverage 90/90/85/90 → build) and `corepack pnpm@12.18.0 run test:integration`. `src/identity/better-auth.ts` is excluded from unit coverage; the integration suite covers it.
 - `provider.ts`: the Strutvane app provider (`@strutvane/auth/provider`; policies → `PermissionProviderToken`, `auth.identity` hook, auth endpoints on the native engine). Tests: `test/app-provider.test.ts`.

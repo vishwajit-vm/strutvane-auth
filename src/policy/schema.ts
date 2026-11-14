@@ -33,6 +33,11 @@ export interface ColumnDef {
 export interface RelationDef {
   readonly table: string
   readonly foreignKey: string
+  /**
+   * Must be UNIQUE in `table` (its primary key or a unique column): the relation compiles to a
+   * scalar subquery, which errors if it finds more than one row. `relationKeyAudit` (subpath
+   * `/postgres`) checks this against a live database.
+   */
   readonly targetKey: string
   readonly columns: Readonly<Record<string, ColumnDef>>
 }
@@ -105,6 +110,10 @@ export interface ResolvedField {
   readonly relation?: RelationDef
 }
 
+/** A short, escaped rendering of a (possibly untrusted) path for error reasons. */
+const label = (value: string): string =>
+  JSON.stringify(value.length > 64 ? `${value.slice(0, 64)}…` : value)
+
 /**
  * Resolve a dotted field path (`"amount"`, `"customer.region"`) against the schema. Unknown fields,
  * unknown relations and paths deeper than one relation are rejected, for trusted and untrusted
@@ -120,19 +129,20 @@ export function resolveField(
   const parts = path.split('.')
   if (parts.length === 1) {
     const column = Object.hasOwn(schema.columns, path) ? schema.columns[path] : undefined
-    if (!column) return fail(`unknown field "${path}" on ${schema.table}`)
+    // Reasons never name the table (internal) and escape the untrusted path.
+    if (!column) return fail(`unknown field ${label(path)}`)
     return { column }
   }
   if (parts.length === 2) {
     const [relName = '', field = ''] = parts
     const relations = schema.relations ?? {}
     const relation = Object.hasOwn(relations, relName) ? relations[relName] : undefined
-    if (!relation) return fail(`unknown relation "${relName}" on ${schema.table}`)
+    if (!relation) return fail(`unknown relation ${label(relName)}`)
     const column = Object.hasOwn(relation.columns, field) ? relation.columns[field] : undefined
-    if (!column) return fail(`unknown field "${field}" on relation "${relName}"`)
+    if (!column) return fail(`unknown field ${label(field)} on relation ${label(relName)}`)
     return { column, relationName: relName, relation }
   }
-  return fail(`field paths deeper than one relation are not supported ("${path}")`)
+  return fail(`field paths deeper than one relation are not supported (${label(path)})`)
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i

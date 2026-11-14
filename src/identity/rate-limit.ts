@@ -41,15 +41,49 @@ export interface RateLimitRule {
 export interface MemoryRateLimitOptions {
   /** Clock (ms). Inject a fake one in tests. */
   readonly now?: () => number
-  /** Maximum keys kept; the oldest are evicted first so memory stays bounded. Default 100,000. */
+  /**
+   * Maximum keys kept, so memory stays bounded. When full, expired windows are dropped first; only
+   * then is the oldest live key evicted, and per-IP keys go before per-account keys (an attacker
+   * who floods the store with new IPs must not be able to reset a victim account's counter).
+   * Default 100,000.
+   */
   readonly maxKeys?: number
 }
+
+const isAccountKey = (key: string): boolean => key.includes(':account:')
 
 /** An in-process store. Not shared between processes. */
 export function memoryRateLimitStore(options: MemoryRateLimitOptions = {}): RateLimitStore {
   const now = options.now ?? Date.now
   const maxKeys = options.maxKeys ?? 100_000
   const windows = new Map<string, { count: number; resetAt: number }>()
+  // A lower bound on the earliest `resetAt` in the map: sweeping is O(n), so it runs only when
+  // something can actually have expired (never on every insert of a full, live store).
+  let nextExpiry = Number.POSITIVE_INFINITY
+
+  const sweep = (t: number): void => {
+    if (t < nextExpiry) return
+    nextExpiry = Number.POSITIVE_INFINITY
+    for (const [key, entry] of windows) {
+      if (entry.resetAt <= t) windows.delete(key)
+      else nextExpiry = Math.min(nextExpiry, entry.resetAt)
+    }
+  }
+
+  const evictOne = (): void => {
+    // Oldest first (Map iteration is insertion order), but never an account key while an IP key
+    // remains.
+    let oldestAccount: string | undefined
+    for (const key of windows.keys()) {
+      if (!isAccountKey(key)) {
+        windows.delete(key)
+        return
+      }
+      oldestAccount ??= key
+    }
+    if (oldestAccount !== undefined) windows.delete(oldestAccount)
+  }
+
   return {
     async hit(key, windowMs) {
       const t = now()
@@ -57,11 +91,10 @@ export function memoryRateLimitStore(options: MemoryRateLimitOptions = {}): Rate
       if (!entry || entry.resetAt <= t) {
         entry = { count: 0, resetAt: t + windowMs }
         windows.delete(key)
-        if (windows.size >= maxKeys) {
-          const oldest = windows.keys().next()
-          if (!oldest.done) windows.delete(oldest.value)
-        }
+        if (windows.size >= maxKeys) sweep(t)
+        if (windows.size >= maxKeys) evictOne()
         windows.set(key, entry)
+        nextExpiry = Math.min(nextExpiry, entry.resetAt)
       }
       entry.count++
       return { count: entry.count, resetInMs: Math.max(0, entry.resetAt - t) }

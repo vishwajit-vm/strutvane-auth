@@ -9,7 +9,11 @@
  *    (membership-verified) tenant is refused with 403, so a session for tenant A can never act in
  *    tenant B by changing a subdomain, path or header. The one exception is a tenant-less service
  *    actor using the trusted `header` resolver (internal services acting for a tenant).
- * 4. **Enforce** `requireAuth` / `tenancy.required`.
+ *    **Anonymous requests get no tenant** unless `tenancy.allowAnonymousTenant` names the
+ *    resolvers allowed to scope them (by default `subdomain` and `path`, never `header` or
+ *    `session`): a tenant-scoped database context must never be chosen by an unauthenticated
+ *    caller's headers.
+ * 4. **Enforce** `requireAuth` (before tenant resolution) and `tenancy.required`.
  * 5. Run the handler inside core's request context (`currentContext()` sees actor and tenant),
  *    and copy the engine's headers (refreshed cookies) onto the response.
  *
@@ -41,7 +45,28 @@ export interface AuthMiddlewareOptions {
     readonly required?: boolean
     /** Reported in the `TenantContext`. Default `shared`. */
     readonly strategy?: TenantStrategy
+    /**
+     * May an anonymous request (actor `null`) be scoped to a tenant, e.g. a public sign-up page on
+     * `acme.example.com`? Default `false`: anonymous requests never get a tenant.
+     * - `true`: only tenants resolved by the `subdomain` or `path` resolvers are kept.
+     * - a list of resolver names: only tenants resolved by those resolvers are kept. Naming
+     *   `header` is an explicit opt-in for anonymous internal callers whose `trust` check is the
+     *   network (peer address), never the header itself.
+     */
+    readonly allowAnonymousTenant?: boolean | readonly string[]
   }
+}
+
+const ANONYMOUS_RESOLVERS: readonly string[] = Object.freeze(['subdomain', 'path'])
+
+/** May a tenant resolved by `resolvedBy` scope an anonymous request? */
+function anonymousTenantAllowed(
+  allow: boolean | readonly string[] | undefined,
+  resolvedBy: string | undefined,
+): boolean {
+  if (allow === undefined || allow === false || resolvedBy === undefined) return false
+  const names = allow === true ? ANONYMOUS_RESOLVERS : allow
+  return names.includes(resolvedBy)
 }
 
 /** What a handler gets to know. */
@@ -81,6 +106,9 @@ export async function authenticateRequest(
     // The engine contract says authenticate never throws; if one does anyway, fail closed.
     actor = null
   }
+  // Checked before tenant resolution, so an anonymous caller learns nothing about tenants.
+  if (options.requireAuth && !actor)
+    return { ok: false, response: problemResponse(new UnauthenticatedError(), headers) }
 
   let tenant: TenantContext | undefined
   if (options.tenancy) {
@@ -90,6 +118,14 @@ export async function authenticateRequest(
       options.tenancy.strategy ? { strategy: options.tenancy.strategy } : {},
     )
     tenant = resolved.tenant
+    if (
+      tenant &&
+      !actor &&
+      !anonymousTenantAllowed(options.tenancy.allowAnonymousTenant, resolved.resolvedBy)
+    ) {
+      // Ignored, never an error, so probing tenant ids anonymously reveals nothing.
+      tenant = undefined
+    }
     if (tenant && actor) {
       const member = actor.tenantId?.toLowerCase() === tenant.id
       const trustedService =
@@ -105,8 +141,6 @@ export async function authenticateRequest(
     }
   }
 
-  if (options.requireAuth && !actor)
-    return { ok: false, response: problemResponse(new UnauthenticatedError(), headers) }
   return { ok: true, state: Object.freeze({ actor, tenant, headers }) }
 }
 

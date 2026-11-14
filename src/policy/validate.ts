@@ -37,9 +37,35 @@ export interface ValidateOptions extends FilterLimits {
    * Never set for request-time validation: there, every reference must already be bound.
    */
   readonly checkActorRef?: (ref: ActorRef, column: ColumnType, where: string) => void
+  /**
+   * The only fields an UNTRUSTED filter may reference (e.g. `policy.filterableFields(actor)`).
+   * Without it, a client could filter or sort on a field it may not read and learn its value one
+   * comparison at a time (`salary gt 50000`, `salary gt 75000`…). Fields outside the list are
+   * rejected with `INVALID_FILTER`, exactly like unknown fields. Relation paths (`customer.region`)
+   * must be listed explicitly. Leave unset only for trusted filters (policy conditions).
+   */
+  readonly allowedFields?: Iterable<string>
 }
 
-type Resolved = Required<FilterLimits> & Pick<ValidateOptions, 'checkActorRef'>
+type Resolved = Required<FilterLimits> & {
+  readonly checkActorRef: ValidateOptions['checkActorRef']
+  readonly allowedFields: ReadonlySet<string> | undefined
+}
+
+/**
+ * Render an attacker-controlled value for an error reason: JSON-escaped (no raw newlines or
+ * control characters reach a log line) and truncated, so a huge input cannot bloat logs.
+ */
+export function safeLabel(value: unknown, max = 64): string {
+  let text: string
+  try {
+    text = typeof value === 'string' ? value : String(JSON.stringify(value) ?? typeof value)
+  } catch {
+    text = typeof value
+  }
+  const cut = text.length > max ? `${text.slice(0, max)}…` : text
+  return JSON.stringify(cut)
+}
 
 const DEFAULTS: Required<FilterLimits> = {
   maxNodes: 2000,
@@ -78,10 +104,13 @@ function checkValue(value: unknown, type: ColumnType, where: string, limits: Res
   if (typeof value === 'string') checkString(value, where, limits)
 }
 
-function checkField(field: unknown, schema: ModelSchema): ColumnType {
+function checkField(field: unknown, schema: ModelSchema, limits: Resolved): ColumnType {
   if (typeof field !== 'string' || field.length === 0 || field.length > 200)
     fail('field must be a non-empty string')
-  return resolveField(schema, field as string, fail).column.type
+  const type = resolveField(schema, field as string, fail).column.type
+  if (limits.allowedFields && !limits.allowedFields.has(field as string))
+    fail(`field ${safeLabel(field)} cannot be used in this filter`)
+  return type
 }
 
 /**
@@ -96,7 +125,13 @@ export function validateFilter(
   schema: ModelSchema,
   options: ValidateOptions = {},
 ): void {
-  const l: Resolved = { ...DEFAULTS, ...options }
+  const { allowedFields, checkActorRef, ...limits } = options
+  const l: Resolved = {
+    ...DEFAULTS,
+    ...limits,
+    checkActorRef,
+    allowedFields: allowedFields === undefined ? undefined : new Set(allowedFields),
+  }
   let nodes = 0
 
   const visit = (node: unknown, depth: number): void => {
@@ -119,11 +154,11 @@ export function validateFilter(
         return
       case 'isNull':
       case 'isNotNull':
-        checkField(f.field, schema)
+        checkField(f.field, schema, l)
         return
       case 'eq':
       case 'ne': {
-        const type = checkField(f.field, schema)
+        const type = checkField(f.field, schema, l)
         checkValue(f.value, type, `${f.op}(${f.field})`, l)
         return
       }
@@ -131,7 +166,7 @@ export function validateFilter(
       case 'gte':
       case 'lt':
       case 'lte': {
-        const type = checkField(f.field, schema)
+        const type = checkField(f.field, schema, l)
         // Text ordering depends on collation (JS compares UTF-16 code units, Postgres uses the
         // database collation), so ordering is restricted to numeric columns.
         if (!isNumeric(type))
@@ -140,7 +175,7 @@ export function validateFilter(
         return
       }
       case 'between': {
-        const type = checkField(f.field, schema)
+        const type = checkField(f.field, schema, l)
         if (!isNumeric(type))
           fail(`between is only allowed on numeric fields (${f.field} is ${type})`)
         checkValue(f.from, type, `between(${f.field}).from`, l)
@@ -149,7 +184,7 @@ export function validateFilter(
       }
       case 'in':
       case 'nin': {
-        const type = checkField(f.field, schema)
+        const type = checkField(f.field, schema, l)
         if (!Array.isArray(f.values)) fail(`${f.op}(${f.field}): "values" must be an array`)
         if (f.values.length > l.maxListLength)
           fail(`${f.op}(${f.field}): more than ${l.maxListLength} values`)
@@ -161,7 +196,7 @@ export function validateFilter(
       case 'contains':
       case 'startsWith':
       case 'endsWith': {
-        const type = checkField(f.field, schema)
+        const type = checkField(f.field, schema, l)
         if (type !== 'text') fail(`${f.op} is only allowed on text fields (${f.field} is ${type})`)
         // The contract allows only a literal string here (no actor references).
         if (typeof f.value !== 'string') fail(`${f.op}(${f.field}): value must be a string`)
@@ -172,7 +207,7 @@ export function validateFilter(
         return
       }
       default:
-        fail(`unknown operator ${JSON.stringify((f as { op?: unknown }).op)}`)
+        fail(`unknown operator ${safeLabel((f as { op?: unknown }).op, 32)}`)
     }
   }
 

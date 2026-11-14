@@ -13,6 +13,11 @@
  *     `LIKE`, whose `%` and `_` wildcards would change the meaning of user-supplied text.
  *   - Case-insensitive text matching folds exactly A–Z with `translate()` (the parameter is folded
  *     in JavaScript), so results never depend on database locale or ICU version.
+ *   - Text columns are compared under `COLLATE "C"` (bytewise). A nondeterministic (ICU,
+ *     case- or accent-insensitive) column collation would otherwise make `'Paid' = 'paid'` true in
+ *     SQL but false in memory, and breaks `strpos`. Indexes used by these predicates should be
+ *     built `COLLATE "C"`; set `textCollation: 'database'` only if every text column uses a
+ *     deterministic collation.
  * - **Composable.** The output is a pure predicate over the subject table alias. To-one relation
  *   fields compile to correlated scalar subqueries, so the caller's FROM/JOIN/ORDER/LIMIT is
  *   untouched and a missing related row reads as NULL, exactly like a `null` relation in memory.
@@ -39,6 +44,11 @@ export type Token = { readonly sql: string } | { readonly param: SqlParam; reado
 export interface CompileOptions extends FilterLimits {
   /** Alias (or table name) of the subject table in the surrounding query. Default `"t"`. */
   readonly alias?: string
+  /**
+   * `'C'` (default): compare text bytewise, identical to the in-memory evaluator whatever the
+   * column collation. `'database'`: use the column collation (only safe when it is deterministic).
+   */
+  readonly textCollation?: 'C' | 'database'
 }
 
 const UPPER = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
@@ -55,10 +65,12 @@ class Compiler {
   readonly #schema: ModelSchema
   readonly #alias: string
   readonly #relationAlias: ReadonlyMap<string, string>
+  readonly #collateC: boolean
 
-  constructor(schema: ModelSchema, alias: string) {
+  constructor(schema: ModelSchema, alias: string, collateC: boolean) {
     this.#schema = schema
     this.#alias = quoteIdent(alias)
+    this.#collateC = collateC
     // Relation aliases are generated (never derived from names or input), so they cannot collide.
     this.#relationAlias = new Map(
       Object.keys(schema.relations ?? {}).map((name, i) => [name, `"sv_rel_${i}"`]),
@@ -73,10 +85,16 @@ class Compiler {
     this.out.push({ param: value, type })
   }
 
-  /** Emit the column (or relation subquery) for a path, optionally ASCII-folded; returns its type. */
-  column(path: string, fold = false): ColumnType {
+  /**
+   * Emit the column (or relation subquery) for a path, optionally ASCII-folded, and under
+   * `COLLATE "C"` when it is a compared text column; returns its type.
+   */
+  column(path: string, fold = false, compare = true): ColumnType {
     const { column, relation, relationName } = resolveField(this.#schema, path, fail)
+    // Collation only matters where text is compared, not for IS [NOT] NULL.
+    const collate = compare && this.#collateC && column.type === 'text'
     if (fold) this.raw('translate(')
+    if (collate) this.raw('(')
     if (relation && relationName) {
       const r = this.#relationAlias.get(relationName) ?? fail('unknown relation')
       this.raw(
@@ -86,6 +104,7 @@ class Compiler {
     } else {
       this.raw(`${this.#alias}.${quoteIdent(column.column)}`)
     }
+    if (collate) this.raw(' COLLATE "C")')
     if (fold) this.raw(`, '${UPPER}', '${LOWER}')`)
     return column.type
   }
@@ -151,7 +170,7 @@ class Compiler {
       case 'isNull':
       case 'isNotNull':
         this.raw('(')
-        this.column(f.field)
+        this.column(f.field, false, false)
         this.raw(f.op === 'isNull' ? ' IS NULL)' : ' IS NOT NULL)')
         return
       case 'eq':
@@ -217,9 +236,11 @@ export function compileToTokens(
   schema: ModelSchema,
   options: CompileOptions = {},
 ): Token[] {
-  const { alias = 't', ...limits } = options
+  const { alias = 't', textCollation = 'C', ...limits } = options
+  if (textCollation !== 'C' && textCollation !== 'database')
+    throw new TypeError("textCollation must be 'C' or 'database'")
   validateFilter(filter, schema, limits)
-  const compiler = new Compiler(schema, alias)
+  const compiler = new Compiler(schema, alias, textCollation === 'C')
   compiler.node(filter)
   return compiler.out
 }

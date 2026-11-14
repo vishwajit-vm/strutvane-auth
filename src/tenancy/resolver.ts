@@ -108,9 +108,12 @@ export function pathResolver(options: {
  * `X-Tenant-Id: <uuid>`, **only from trusted callers** (internal services behind your network).
  *
  * The header is trivially forged by browsers and scripts, so `trust` is required and is checked
- * before the header is even read. A typical `trust` checks for a service actor, or the peer
- * address (see `requestMeta`). An untrusted request's header is ignored, never an error, so
- * probing it reveals nothing.
+ * before the header is even read. A typical `trust` checks for a tenant-less service actor. An
+ * untrusted request's header is ignored, never an error, so probing it reveals nothing.
+ *
+ * Even when `trust` says yes, `authenticateRequest` drops a header-resolved tenant for an
+ * ANONYMOUS request unless `tenancy.allowAnonymousTenant` lists `'header'` explicitly (for internal
+ * callers trusted by peer address, see `requestMeta`).
  */
 export function headerResolver(options: {
   readonly trust: (input: TenantResolveInput) => boolean

@@ -79,9 +79,15 @@ describe('authenticateRequest', () => {
     expect(svc.ok && svc.state.tenant?.id).toBe(TENANT_B)
   })
 
-  it('anonymous requests may resolve a public tenant; requireAuth and tenancy.required are enforced', async () => {
+  it('anonymous requests get a tenant only with allowAnonymousTenant; requireAuth and tenancy.required are enforced', async () => {
     const anon = await run('https://acme.example.com/')
-    expect(anon.ok && anon.state).toMatchObject({ actor: null, tenant: { id: TENANT_A } })
+    expect(anon.ok && anon.state).toMatchObject({ actor: null, tenant: undefined })
+    const pub = await run(
+      'https://acme.example.com/',
+      {},
+      { tenancy: { ...tenancy, allowAnonymousTenant: true } },
+    )
+    expect(pub.ok && pub.state).toMatchObject({ actor: null, tenant: { id: TENANT_A } })
     const must = await run('https://acme.example.com/', {}, { requireAuth: true })
     expect(must.ok ? 200 : must.response.status).toBe(401)
     const noTenant = await authenticateRequest(new Request('https://x.test/'), {

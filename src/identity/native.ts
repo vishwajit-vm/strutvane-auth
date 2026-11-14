@@ -14,16 +14,19 @@
  * - a NEW session on every sign-in (the presented one is revoked), and token rotation on tenant
  *   switch (no session fixation);
  * - single-use, expiring, hashed reset tokens; delivery runs in the background so known and
- *   unknown emails take the same time; a completed reset revokes every session;
- * - per-IP (trusted proxies only) and per-account rate limits on sign-in, sign-up and reset;
+ *   unknown emails take the same time; a completed reset revokes every session and every other
+ *   outstanding reset token of that user;
+ * - per-IP (trusted proxies only, IPv6 per /64) and per-account rate limits on sign-in, sign-up
+ *   and reset; a request without a peer address counts against a shared fallback bucket;
+ * - token rotation whenever privileges change (tenant switch, tenant creation);
  * - tenant and roles re-read from membership on every request.
  *
  * @module
  */
 import { createHash, randomBytes, scrypt as scryptCallback, timingSafeEqual } from 'node:crypto'
-import type { Actor } from '@strutvane/contracts'
+import type { Actor, Logger } from '@strutvane/contracts'
 import { uuidv7 } from '@strutvane/core'
-import { resolveClientIp, type TrustedProxies, trustedProxies } from '../http/client-ip.ts'
+import { type TrustedProxies, trustedProxies } from '../http/client-ip.ts'
 import { isUuid } from '../policy/schema.ts'
 import {
   type Authentication,
@@ -35,10 +38,9 @@ import {
   type PasswordResetDelivery,
   type TenantMembership,
 } from './engine.ts'
+import { createIdentityLimiter } from './limiter.ts'
 import {
-  accountKey,
   assertRule,
-  checkRateLimits,
   memoryRateLimitStore,
   normalizeEmail,
   type RateLimitRule,
@@ -87,6 +89,14 @@ export interface NativeEngineOptions {
   readonly rateLimitStore?: RateLimitStore
   /** Proxies whose `X-Forwarded-For` may be trusted (addresses or CIDRs). Default: none. */
   readonly trustedProxies?: readonly string[]
+  /**
+   * When a request carries no peer address, skip the per-IP limit instead of counting it against
+   * the shared fallback bucket. Only for hosts that knowingly have no socket (in-process callers).
+   * Default `false` (fail closed).
+   */
+  readonly allowMissingPeer?: boolean
+  /** Receives operational warnings (e.g. requests without a peer address), once each. */
+  readonly logger?: Pick<Logger, 'warn'>
   /** Session lifetime. Default 7 days. */
   readonly sessionTtlSeconds?: number
   /** scrypt cost (a power of two, at least 2^14). Default 2^15. Tests may lower it to 2^14. */
@@ -152,6 +162,15 @@ export function createNativeEngine(options: NativeEngineOptions): IdentityEngine
   for (const [name, rule] of Object.entries(limits)) assertRule(name, rule)
   const store = options.rateLimitStore ?? memoryRateLimitStore({ now })
   const proxies: TrustedProxies = trustedProxies(options.trustedProxies)
+  const limited = createIdentityLimiter({
+    store,
+    proxies,
+    engine: 'native',
+    logger: options.logger,
+    ...(options.allowMissingPeer !== undefined
+      ? { allowMissingPeer: options.allowMissingPeer }
+      : {}),
+  })
   const report: ErrorReporter = (context, error) => {
     try {
       options.onUnexpectedError?.(context, error)
@@ -250,23 +269,6 @@ export function createNativeEngine(options: NativeEngineOptions): IdentityEngine
     const session: Session = { userId, activeTenantId, expiresAt: now() + ttlMs }
     sessions.set(sha256(t), session)
     return { headers: cookie(t, Math.floor(ttlMs / 1000)), session }
-  }
-
-  const limited = async (
-    request: Request,
-    scope: string,
-    ipRule: RateLimitRule,
-    email?: string,
-    accountRule?: RateLimitRule,
-  ) => {
-    const ip = resolveClientIp(request, proxies)
-    const checks: [string, RateLimitRule][] = []
-    // No usable IP (no adapter attached the peer address): skip the IP limit rather than putting
-    // every such request into ONE shared bucket (spike 07 finding). The account limit still applies.
-    if (ip !== undefined) checks.push([`${scope}:ip:${ip}`, ipRule])
-    if (email !== undefined && accountRule) checks.push([accountKey(scope, email), accountRule])
-    const result = await checkRateLimits(store, checks)
-    return result.limited ? result.retryAfterSeconds : undefined
   }
 
   const guarded = async <T>(
@@ -404,6 +406,9 @@ export function createNativeEngine(options: NativeEngineOptions): IdentityEngine
         user.hash = await hashPassword(input.newPassword, salt)
         user.salt = salt
         for (const [sid, session] of sessions) if (session.userId === user.id) sessions.delete(sid)
+        // Every other reset link for this user dies too: a link mailed before the reset (possibly
+        // to a mailbox an attacker could read) must not reset the new password again.
+        for (const [tid, t] of resetTokens) if (t.userId === user.id) resetTokens.delete(tid)
         return ok(null)
       }),
 
@@ -418,13 +423,14 @@ export function createNativeEngine(options: NativeEngineOptions): IdentityEngine
         const tenant: Tenant = { id: uuidv7(), name: input.name, slug: input.slug }
         tenants.set(tenant.id, tenant)
         members.set(tenant.id, new Map([[c.session.userId, ['owner']]]))
-        c.session.activeTenantId = tenant.id
-        return ok<TenantMembership>({
-          tenantId: tenant.id,
-          name: tenant.name,
-          slug: tenant.slug,
-          roles: ['owner'],
-        })
+        // Privileges changed (the user is now an owner): rotate the token, like switchTenant, so a
+        // token captured before cannot ride along into the new tenant.
+        sessions.delete(c.key)
+        const rotated = newSession(c.session.userId, tenant.id)
+        return ok<TenantMembership>(
+          { tenantId: tenant.id, name: tenant.name, slug: tenant.slug, roles: ['owner'] },
+          rotated.headers,
+        )
       }),
 
     listTenants: (request) =>

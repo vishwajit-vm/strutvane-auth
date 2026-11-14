@@ -31,6 +31,7 @@ export {
 } from './errors.ts'
 export {
   normalizeIp,
+  rateLimitSubject,
   resolveClientIp,
   type TrustedProxies,
   trustedProxies,
@@ -79,7 +80,13 @@ export {
   problemResponse,
   runWithAuth,
 } from './middleware/core.ts'
-export { ActorAttributeError, bindActor, isActorRef, resolveActorRef } from './policy/bind.ts'
+export {
+  ActorAttributeError,
+  type BindOptions,
+  bindActor,
+  isActorRef,
+  resolveActorRef,
+} from './policy/bind.ts'
 export type {
   ActorProxy,
   Arg,
@@ -104,6 +111,7 @@ export {
   type Policy,
   type PolicyApi,
   type PolicyOptions,
+  type RoleScope,
   type RuleContext,
   type RuleInfo,
   type RuleOptions,
@@ -120,6 +128,7 @@ export {
 export {
   type FilterLimits,
   foldAscii,
+  safeLabel,
   type ValidateOptions,
   validateFilter,
 } from './policy/validate.ts'

@@ -22,6 +22,7 @@ export const AUTH_ERRORS: readonly ErrorDefinition[] = Object.freeze(
       ['EMAIL_UNAVAILABLE', 422, 'This email cannot be used'],
       ['INVALID_TOKEN', 400, 'Invalid or expired link'],
       ['TENANT_REQUIRED', 400, 'No tenant could be determined for this request'],
+      ['UNSUPPORTED_MEDIA_TYPE', 415, 'Unsupported media type'],
     ] as const
   ).map(([code, status, title]) =>
     Object.freeze({ code, status, title, owner: '@strutvane/auth' }),

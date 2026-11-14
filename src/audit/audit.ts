@@ -5,7 +5,9 @@
  *   and trace ids taken from the request context) and writes it to an {@link AuditSink}.
  * - {@link diffChanges} produces field-level changes between two versions of a record. Fields
  *   that look sensitive (passwords, tokens, secrets… plus any you name) keep the fact that they
- *   changed but lose both values (`redacted: true`). Nested values are redacted too.
+ *   changed but lose both values (`redacted: true`). Nested values are redacted too. Pass a
+ *   policy as `maskFor` and every field with a read rule is redacted the same way, so the audit
+ *   log never shows values (salaries, internal notes…) that the policy hides from most readers.
  *
  * **Write audit in the same transaction as the change** (contracts: "audit and data can never
  * disagree"): give `recordAudit` a sink bound to your transaction. The framework's Postgres sink
@@ -54,6 +56,11 @@ export interface DiffOptions {
   readonly sensitive?: readonly string[]
   /** Fields never recorded at all (e.g. `updatedAt`). */
   readonly ignore?: readonly string[]
+  /**
+   * The resource's policy (anything with `restrictedFields`): every field that has a read rule is
+   * redacted, whoever may read the audit log later.
+   */
+  readonly maskFor?: { readonly restrictedFields: readonly string[] }
 }
 
 /** Structural equality for JSON-like values (dates by time, objects key by key). */
@@ -84,6 +91,7 @@ export function diffChanges(
 ): FieldChange[] {
   const isSensitive = sensitiveKeyMatcher([...DEFAULT_SENSITIVE_KEYS, ...(options.sensitive ?? [])])
   const ignore = new Set(options.ignore ?? [])
+  const masked = new Set(options.maskFor?.restrictedFields ?? [])
   const keys = [...new Set([...Object.keys(before ?? {}), ...Object.keys(after ?? {})])].sort()
   const changes: FieldChange[] = []
   for (const field of keys) {
@@ -91,7 +99,7 @@ export function diffChanges(
     const from = before && Object.hasOwn(before, field) ? before[field] : undefined
     const to = after && Object.hasOwn(after, field) ? after[field] : undefined
     if (same(from, to)) continue
-    if (isSensitive(field)) {
+    if (masked.has(field) || isSensitive(field)) {
       changes.push({ field, from: REDACTED, to: REDACTED, redacted: true })
     } else {
       changes.push({

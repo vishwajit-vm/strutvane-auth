@@ -308,9 +308,15 @@ describe('evaluateFilter: two-valued, NULL-safe semantics', () => {
     ).toThrow(FieldNotLoadedError)
   })
 
-  it('values of the wrong runtime type in the record never match ordering', () => {
-    expect(ev({ op: 'gt', field: 'amount', value: 1 }, { amount: '500' })).toBe(false)
-    expect(ev({ op: 'between', field: 'amount', from: 1, to: 1000 }, { amount: '500' })).toBe(false)
-    expect(ev({ op: 'contains', field: 'title', value: '1' }, { title: 1 })).toBe(false)
+  it('values of the wrong runtime type in the record fail closed (throw), never guess', () => {
+    expect(() => ev({ op: 'gt', field: 'amount', value: 1 }, { amount: '500' })).toThrow(
+      FieldNotLoadedError,
+    )
+    expect(() =>
+      ev({ op: 'between', field: 'amount', from: 1, to: 1000 }, { amount: '500' }),
+    ).toThrow(FieldNotLoadedError)
+    expect(() => ev({ op: 'contains', field: 'title', value: '1' }, { title: 1 })).toThrow(
+      FieldNotLoadedError,
+    )
   })
 })

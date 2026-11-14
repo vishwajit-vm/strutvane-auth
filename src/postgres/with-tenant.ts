@@ -54,6 +54,23 @@ export class InvalidTenantIdError extends Error {
   }
 }
 
+/** `COMMIT` was answered with `ROLLBACK`: nothing `work` wrote was saved. */
+export class TransactionAbortedError extends Error {
+  override readonly name = 'TransactionAbortedError'
+  constructor() {
+    super(
+      'The tenant transaction was rolled back by Postgres (a statement inside it failed); nothing was committed',
+    )
+  }
+}
+
+/** The command tag of a query result, when the driver reports one (`pg` does; PGlite does not). */
+const commandOf = (result: unknown): string | undefined => {
+  if (typeof result !== 'object' || result === null) return undefined
+  const command = (result as { command?: unknown }).command
+  return typeof command === 'string' ? command.toUpperCase() : undefined
+}
+
 /** Options for {@link withTenant}. */
 export interface WithTenantOptions {
   /** The setting name. Default `app.tenant_id`; must match your RLS policies. */
@@ -71,6 +88,10 @@ const toError = (value: unknown): Error =>
  * Guarantees:
  * - The tenant id is validated before a connection is even checked out.
  * - Commit when `work` resolves, roll back when it throws; the original error is re-thrown.
+ * - A transaction that Postgres aborted (a statement failed inside `work` and the error was caught
+ *   and swallowed) is NOT reported as success: Postgres answers `COMMIT` on an aborted transaction
+ *   with a `ROLLBACK` command tag, and `withTenant` then rejects with {@link TransactionAbortedError}.
+ *   (This needs a driver that reports the command tag, as `pg` does.)
  * - The client is always released. If the transaction could not be closed cleanly (BEGIN, COMMIT
  *   or ROLLBACK failed, or the backend died), the connection is DESTROYED, never re-pooled, so a
  *   connection possibly still inside a tenant transaction is never reused.
@@ -118,7 +139,8 @@ export async function withTenant<C extends TenantClient, T>(
     try {
       await client.query('SELECT set_config($1, $2, true)', [setting, tenantId.toLowerCase()])
       const result = await work(client)
-      await client.query('COMMIT')
+      const committed = commandOf(await client.query('COMMIT'))
+      if (committed !== undefined && committed !== 'COMMIT') throw new TransactionAbortedError()
       return result
     } catch (error) {
       try {

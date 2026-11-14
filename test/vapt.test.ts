@@ -312,6 +312,8 @@ describe('cross-tenant access, end to end (engine → middleware → withTenant 
     const ta = await engine.createTenant({ name: 'Acme', slug: 'acme' }, req(aliceJar))
     const tb = await engine.createTenant({ name: 'Globex', slug: 'globex' }, req(bobJar))
     if (!ta.ok || !tb.ok) throw new Error('tenants not created')
+    store(aliceJar, ta)
+    store(bobJar, tb)
     tenants = { a: ta.value.tenantId, b: tb.value.tenantId }
     await db.query('INSERT INTO notes (tenant_id, body) VALUES ($1, $2), ($3, $4)', [
       tenants.a,

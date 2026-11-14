@@ -5,6 +5,7 @@
  * - {@link tenantRlsSql} / {@link tenancyRolesSql}: migration SQL for RESTRICTIVE RLS and roles.
  * - {@link tenancyAudit}: find unprotected tables, bypassing roles and definer views at runtime.
  * - {@link findSessionSet}: lint SQL for session-level tenant settings.
+ * - {@link relationKeyAudit}: check that policy relations point at unique keys.
  * - {@link postgresRateLimitStore}: a shared rate-limit store for identity engines.
  *
  * @module
@@ -21,6 +22,7 @@ export {
   postgresRateLimitStore,
   rateLimitTableSql,
 } from './rate-limit-store.ts'
+export { type RelationKeyFinding, relationKeyAudit } from './relation-keys.ts'
 export {
   type MigrationSql,
   type TenancyRolesOptions,
@@ -35,6 +37,7 @@ export {
   TENANT_SETTING,
   type TenantClient,
   type TenantPool,
+  TransactionAbortedError,
   type WithTenantOptions,
   withTenant,
 } from './with-tenant.ts'

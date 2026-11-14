@@ -8,7 +8,15 @@
  */
 import pg from 'pg'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { findSessionSet, tenancyAudit, withTenant } from '../../src/postgres/index.ts'
+import { evaluateFilter } from '../../src/policy/evaluate.ts'
+import { defineSchema } from '../../src/policy/schema.ts'
+import {
+  findSessionSet,
+  TransactionAbortedError,
+  tenancyAudit,
+  withTenant,
+} from '../../src/postgres/index.ts'
+import { compileToSql } from '../../src/sql/index.ts'
 import {
   count,
   createDatabase,
@@ -203,5 +211,67 @@ describe('bypasses ADR-0007 rule 4 forbids (and the audit flags)', () => {
       pool.query('DROP POLICY invoices_tenant_isolation ON app.invoices'),
     ).rejects.toMatchObject({ code: '42501' })
     expect(await tenancyAudit(pool)).toEqual([])
+  })
+})
+
+describe('withTenant on a real server: swallowed statement errors', () => {
+  it('a caught failure inside work makes withTenant reject instead of reporting a commit', async () => {
+    const pool = track(fx.pool(fx.runtime, 1))
+    await expect(
+      withTenant(pool, TENANT_A, async (c) => {
+        await c.query('SELECT 1/0').catch(() => undefined)
+        return 'looks fine'
+      }),
+    ).rejects.toBeInstanceOf(TransactionAbortedError)
+    // The connection is clean afterwards.
+    expect(await withTenant(pool, TENANT_A, (c) => count(c))).toBe(PER_TENANT)
+  })
+})
+
+describe('text comparisons under a nondeterministic column collation', () => {
+  const schema = defineSchema({
+    table: 'coll_t',
+    columns: { id: { column: 'id', type: 'int4' }, status: { column: 'status', type: 'text' } },
+  })
+  const rows = [
+    { id: 1, status: 'Paid' },
+    { id: 2, status: 'paid' },
+  ]
+
+  beforeAll(async () => {
+    await db.admin.query(
+      "CREATE COLLATION IF NOT EXISTS sv_ci (provider = icu, locale = 'und-u-ks-level2', deterministic = false)",
+    )
+    await db.admin.query('CREATE TABLE coll_t (id int PRIMARY KEY, status text COLLATE sv_ci)')
+    await db.admin.query("INSERT INTO coll_t VALUES (1, 'Paid'), (2, 'paid')")
+  })
+
+  const select = async (filter: Parameters<typeof compileToSql>[0], database = false) => {
+    const { sql, params } = compileToSql(
+      filter,
+      schema,
+      database ? { textCollation: 'database' } : {},
+    )
+    const result = await db.admin.query(
+      `SELECT id FROM coll_t AS t WHERE ${sql} ORDER BY id`,
+      params,
+    )
+    return result.rows.map((r: { id: number }) => r.id)
+  }
+  const inMemory = (filter: Parameters<typeof compileToSql>[0]) =>
+    rows.filter((r) => evaluateFilter(filter, r, schema)).map((r) => r.id)
+
+  it('SQL agrees with in-memory evaluation (COLLATE "C"); the column collation alone would not', async () => {
+    for (const filter of [
+      { op: 'eq', field: 'status', value: 'paid' },
+      { op: 'ne', field: 'status', value: 'paid' },
+      { op: 'in', field: 'status', values: ['paid'] },
+      { op: 'contains', field: 'status', value: 'Pa', caseSensitive: true },
+      { op: 'startsWith', field: 'status', value: 'p', caseSensitive: true },
+      { op: 'endsWith', field: 'status', value: 'aid' },
+    ] as const) {
+      expect(await select(filter)).toEqual(inMemory(filter))
+    }
+    expect(await select({ op: 'eq', field: 'status', value: 'paid' }, true)).toEqual([1, 2])
   })
 })

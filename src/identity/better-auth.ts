@@ -13,7 +13,8 @@
  * - **Trusted proxies only.** The client IP comes from the socket peer (see `attachRequestMeta`),
  *   and `X-Forwarded-For` is honoured only from configured proxies. Better Auth receives the
  *   resolved IP in a private header that clients cannot inject (only allow-listed headers are
- *   forwarded).
+ *   forwarded). IPv6 clients count per /64. A request without a peer address counts against one
+ *   shared fallback bucket (fail closed) unless `allowMissingPeer` is set.
  * - `minPasswordLength: 12`, `revokeSessionsOnPasswordReset`, background tasks (constant-time
  *   reset), `onAPIError.throw` routed to the reporter (never stderr), UUID ids validated at the
  *   boundary before any database call.
@@ -27,7 +28,7 @@
  * @module
  */
 
-import type { Actor } from '@strutvane/contracts'
+import type { Actor, Logger } from '@strutvane/contracts'
 import { betterAuth } from 'better-auth'
 import { getSchema } from 'better-auth/db'
 import { getMigrations } from 'better-auth/db/migration'
@@ -46,14 +47,9 @@ import {
   type PasswordResetDelivery,
   type TenantMembership,
 } from './engine.ts'
+import { createIdentityLimiter } from './limiter.ts'
 import { type ActorAttributes, DEFAULT_RATE_LIMITS, type IdentityRateLimits } from './native.ts'
-import {
-  accountKey,
-  assertRule,
-  checkRateLimits,
-  type RateLimitRule,
-  type RateLimitStore,
-} from './rate-limit.ts'
+import { assertRule, type RateLimitStore } from './rate-limit.ts'
 
 /** Options for {@link createBetterAuthEngine}. */
 export interface BetterAuthEngineOptions {
@@ -72,6 +68,13 @@ export interface BetterAuthEngineOptions {
   readonly rateLimits?: IdentityRateLimits
   /** Proxies whose `X-Forwarded-For` may be trusted (addresses or CIDRs). Default: none. */
   readonly trustedProxies?: readonly string[]
+  /**
+   * When a request carries no peer address, skip the per-IP limit instead of counting it against
+   * the shared fallback bucket. Default `false` (fail closed).
+   */
+  readonly allowMissingPeer?: boolean
+  /** Receives operational warnings (e.g. requests without a peer address), once each. */
+  readonly logger?: Pick<Logger, 'warn'>
   /** Unexpected failures go here (wire to the logger). */
   readonly onUnexpectedError?: ErrorReporter
   /** Extra actor attributes for ABAC rules. `emailVerified` is always set. */
@@ -200,6 +203,15 @@ export function createBetterAuthEngine(options: BetterAuthEngineOptions): Better
     }
   }
   const auth = build(options, report)
+  const limited = createIdentityLimiter({
+    store: options.rateLimitStore,
+    proxies,
+    engine: 'better-auth',
+    logger: options.logger,
+    ...(options.allowMissingPeer !== undefined
+      ? { allowMissingPeer: options.allowMissingPeer }
+      : {}),
+  })
 
   async function call(
     method: 'GET' | 'POST',
@@ -239,7 +251,9 @@ export function createBetterAuthEngine(options: BetterAuthEngineOptions): Better
       typeof res.body === 'object' && res.body !== null && 'code' in res.body
         ? String((res.body as { code: unknown }).code)
         : ''
-    const code = CODE_MAP[engineCode] ?? codeFromStatus(res.status)
+    // Own keys only: a body code such as "constructor" or "__proto__" must not reach the prototype.
+    const mapped = Object.hasOwn(CODE_MAP, engineCode) ? CODE_MAP[engineCode] : undefined
+    const code = mapped ?? codeFromStatus(res.status)
     if (code === 'INTERNAL_ERROR')
       report(`better-auth ${res.status} ${engineCode}`, new Error(`HTTP ${res.status}`))
     return fail(code, res.headers)
@@ -255,21 +269,6 @@ export function createBetterAuthEngine(options: BetterAuthEngineOptions): Better
       report(context, error)
       return fail('INTERNAL_ERROR')
     }
-  }
-
-  async function limited(
-    request: Request,
-    scope: string,
-    ipRule: RateLimitRule,
-    email?: string,
-    accountRule?: RateLimitRule,
-  ) {
-    const ip = resolveClientIp(request, proxies)
-    const checks: [string, RateLimitRule][] = []
-    if (ip !== undefined) checks.push([`${scope}:ip:${ip}`, ipRule])
-    if (email !== undefined && accountRule) checks.push([accountKey(scope, email), accountRule])
-    const result = await checkRateLimits(options.rateLimitStore, checks)
-    return result.limited ? result.retryAfterSeconds : undefined
   }
 
   async function rolesIn(userId: string, tenantId: string): Promise<readonly string[] | null> {

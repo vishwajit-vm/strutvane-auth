@@ -289,19 +289,24 @@ export function runIdentityContract(label: string, factory: EngineFactory): void
         ).toBe('RATE_LIMITED')
       })
 
-      test('requests without a known client address do NOT share one bucket', async () => {
+      test('requests without a known client address share ONE fallback bucket (fail closed)', async () => {
         const a = await signedUpUser('noip-a')
         const b = await signedUpUser('noip-b')
         const noPeer = () => browserRequest(CONTRACT_DEV_URL, { noPeer: true, viaProxy: false })
-        for (let i = 0; i <= CONTRACT_RATE_LIMITS.signInPerIp.max; i++) {
+        for (let i = 0; i < CONTRACT_RATE_LIMITS.signInPerIp.max; i++) {
           expect(
             code(
               await engine.signIn({ email: a.address, password: 'wrong wrong wrong' }, noPeer()),
             ),
           ).toBe('INVALID_CREDENTIALS')
         }
+        // The per-IP limit is not skipped: the next peer-less attempt is limited, for any account.
         expect(
           code(await engine.signIn({ email: b.address, password: TEST_PASSWORD }, noPeer())),
+        ).toBe('RATE_LIMITED')
+        // Requests with a known peer are unaffected.
+        expect(
+          code(await engine.signIn({ email: b.address, password: TEST_PASSWORD }, req())),
         ).toBe('ok')
       })
     })

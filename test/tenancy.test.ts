@@ -12,7 +12,9 @@ import {
   InvalidTenantIdError,
   postgresRateLimitStore,
   rateLimitTableSql,
+  relationKeyAudit,
   type TenantClient,
+  TransactionAbortedError,
   tenancyAudit,
   tenancyRolesSql,
   tenantExpression,
@@ -356,6 +358,150 @@ describe('tenancyAudit', () => {
 
   it('validates the column name', async () => {
     await expect(tenancyAudit(db, { column: 'x; drop' })).rejects.toThrow(TypeError)
+    await expect(tenancyAudit(db, { setting: "x'; drop" })).rejects.toThrow(TypeError)
+  })
+
+  it('sees ownership and RLS bypass through role membership', async () => {
+    await asSuper(() =>
+      db.exec('CREATE ROLE sv_bypass NOLOGIN BYPASSRLS; GRANT app_owner, sv_bypass TO app_user'),
+    )
+    try {
+      const codes = (await tenancyAudit(db)).map((f) => `${f.code}:${f.object}`)
+      expect(codes).toContain('RUNTIME_ROLE_OWNS_TABLE:app.invoices')
+      expect(codes).toContain('RUNTIME_ROLE_BYPASSES_RLS:app_user')
+    } finally {
+      await asSuper(() => db.exec('REVOKE app_owner, sv_bypass FROM app_user; DROP ROLE sv_bypass'))
+    }
+    expect(await tenancyAudit(db)).toEqual([])
+  })
+
+  it('only a RESTRICTIVE FOR ALL policy for every role that reads the tenant setting counts', async () => {
+    await asSuper(() =>
+      db.exec(`
+        CREATE TABLE public.restr_true (id int, tenant_id uuid);
+        ALTER TABLE public.restr_true ENABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.restr_true FORCE ROW LEVEL SECURITY;
+        CREATE POLICY p ON public.restr_true AS RESTRICTIVE FOR ALL USING (true) WITH CHECK (true);
+        CREATE TABLE public.to_other (id int, tenant_id uuid);
+        ALTER TABLE public.to_other ENABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.to_other FORCE ROW LEVEL SECURITY;
+        CREATE POLICY p ON public.to_other AS RESTRICTIVE FOR ALL TO app_owner
+          USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
+        CREATE TABLE public.weak_check (id int, tenant_id uuid);
+        ALTER TABLE public.weak_check ENABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.weak_check FORCE ROW LEVEL SECURITY;
+        CREATE POLICY p ON public.weak_check AS RESTRICTIVE FOR ALL
+          USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid)
+          WITH CHECK (true);
+        CREATE TABLE public.using_only (id int, tenant_id uuid);
+        ALTER TABLE public.using_only ENABLE ROW LEVEL SECURITY;
+        ALTER TABLE public.using_only FORCE ROW LEVEL SECURITY;
+        CREATE POLICY p ON public.using_only AS RESTRICTIVE FOR ALL
+          USING (tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid);
+      `),
+    )
+    try {
+      const codes = (await tenancyAudit(db)).map((f) => `${f.code}:${f.object}`)
+      expect(codes).toEqual(
+        expect.arrayContaining([
+          'NO_RESTRICTIVE_POLICY:public.restr_true',
+          'NO_RESTRICTIVE_POLICY:public.to_other',
+          'NO_RESTRICTIVE_POLICY:public.weak_check',
+        ]),
+      )
+      // USING without WITH CHECK: Postgres applies USING to writes too, so it is protected.
+      expect(codes).not.toContain('NO_RESTRICTIVE_POLICY:public.using_only')
+    } finally {
+      await asSuper(() =>
+        db.exec(
+          'DROP TABLE public.restr_true, public.to_other, public.weak_check, public.using_only',
+        ),
+      )
+    }
+  })
+
+  it('flags a role- or database-level default for the tenant setting', async () => {
+    await asSuper(() => db.exec(`ALTER ROLE app_user SET app.tenant_id = '${TENANT_A}'`))
+    try {
+      const findings = await tenancyAudit(db)
+      expect(findings.map((f) => `${f.code}:${f.object}`)).toContain(
+        'TENANT_SETTING_DEFAULT:app_user',
+      )
+    } finally {
+      await asSuper(() => db.exec('ALTER ROLE app_user RESET app.tenant_id'))
+    }
+    expect(await tenancyAudit(db)).toEqual([])
+  })
+})
+
+describe('withTenant: a swallowed statement error is not reported as a commit', () => {
+  const fakePool = (commitTag: string | undefined) => {
+    const released: unknown[] = []
+    return {
+      released,
+      pool: {
+        connect: async (): Promise<TenantClient> => ({
+          query: async (text: string) =>
+            text === 'COMMIT' && commitTag !== undefined ? { command: commitTag } : { rows: [] },
+          release: (e?: Error | boolean) => {
+            released.push(e)
+          },
+          on: () => undefined,
+          off: () => undefined,
+        }),
+      },
+    }
+  }
+
+  it('COMMIT answered with ROLLBACK rejects with TransactionAbortedError', async () => {
+    const f = fakePool('ROLLBACK')
+    await expect(withTenant(f.pool, TENANT_A, async () => 'saved?')).rejects.toBeInstanceOf(
+      TransactionAbortedError,
+    )
+    expect(f.released).toEqual([undefined])
+  })
+
+  it('a real COMMIT, or a driver without command tags, resolves', async () => {
+    expect(await withTenant(fakePool('COMMIT').pool, TENANT_A, async () => 1)).toBe(1)
+    expect(await withTenant(fakePool(undefined).pool, TENANT_A, async () => 2)).toBe(2)
+  })
+})
+
+describe('relationKeyAudit', () => {
+  it('requires a unique key on the relation target; reports missing tables', async () => {
+    await db.exec('RESET ROLE')
+    try {
+      await db.exec(`
+        CREATE TABLE public.rk_customers (id uuid PRIMARY KEY, code text);
+        CREATE TABLE public.rk_dupes (code text);
+        CREATE UNIQUE INDEX rk_partial ON public.rk_dupes (code) WHERE code <> '';
+      `)
+      const columns = { id: { column: 'id', type: 'uuid' } } as const
+      const schema = (table: string, targetKey: string) => ({
+        table: 'rk_invoices',
+        columns,
+        relations: { r: { table, foreignKey: 'r_id', targetKey, columns } },
+      })
+      expect(await relationKeyAudit(db, [schema('public.rk_customers', 'id')])).toEqual([])
+      const findings = await relationKeyAudit(db, [
+        schema('public.rk_customers', 'code'),
+        schema('public.rk_dupes', 'code'),
+        schema('public.rk_missing', 'id'),
+        schema('public.rk_missing', 'id'),
+        { table: 'x', columns },
+      ])
+      expect(findings.map((f) => `${f.code}:${f.object}`)).toEqual([
+        'RELATION_KEY_NOT_UNIQUE:public.rk_customers.code',
+        'RELATION_KEY_NOT_UNIQUE:public.rk_dupes.code',
+        'RELATION_TABLE_MISSING:public.rk_missing.id',
+      ])
+      await expect(relationKeyAudit(db, [schema('a; drop', 'id')])).rejects.toThrow(
+        PolicyDefinitionError,
+      )
+    } finally {
+      await db.exec('DROP TABLE IF EXISTS public.rk_customers, public.rk_dupes')
+      await db.exec('SET ROLE app_user')
+    }
   })
 })
 
@@ -380,6 +526,29 @@ describe('findSessionSet (lint for ADR-0007 rule 3)', () => {
       '4:warning:SET_LOCAL',
       '5:error:SESSION_SET_CONFIG',
       '6:error:SESSION_SET_CONFIG',
+    ])
+  })
+
+  it('flags persistent defaults, RESET and quoted setting names', () => {
+    const sql = [
+      "ALTER ROLE app_user SET app.tenant_id = 'x';",
+      "ALTER DATABASE d SET app.tenant_id TO 'x';",
+      'SET "app"."tenant_id" = 1;',
+      'SET "app.tenant_id" TO \'x\';',
+      'RESET app.tenant_id;',
+      'ALTER ROLE r RESET app.tenant_id;',
+      'SET LOCAL "app" . tenant_id = \'x\';',
+      'ALTER USER u IN DATABASE d SET "app"."tenant_id" = \'x\';',
+      'SET app.tenant_idx = 1;',
+    ].join('\n')
+    expect(findSessionSet(sql).map((f) => `${f.line}:${f.severity}:${f.code}`)).toEqual([
+      '1:error:PERSISTENT_SET',
+      '2:error:PERSISTENT_SET',
+      '3:error:SESSION_SET',
+      '4:error:SESSION_SET',
+      '5:warning:SESSION_RESET',
+      '7:warning:SET_LOCAL',
+      '8:error:PERSISTENT_SET',
     ])
   })
 

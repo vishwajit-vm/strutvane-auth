@@ -87,3 +87,37 @@ export function resolveClientIp(
   }
   return peer
 }
+
+/** Expand an IPv6 address (already validated by `isIP`) into its eight 16-bit groups. */
+function ipv6Groups(ip: string): number[] {
+  let text = ip
+  // An embedded IPv4 tail (`64:ff9b::192.0.2.1`) becomes two hex groups.
+  const v4 = /(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(text)
+  if (v4) {
+    const [a, b, c, d] = v4.slice(1).map(Number) as [number, number, number, number]
+    text = `${text.slice(0, v4.index)}${((a << 8) | b).toString(16)}:${((c << 8) | d).toString(16)}`
+  }
+  const [head = '', tail] = text.split('::')
+  const left = head.length > 0 ? head.split(':') : []
+  const right = tail !== undefined && tail.length > 0 ? tail.split(':') : []
+  const fill = tail === undefined ? 0 : 8 - left.length - right.length
+  return [...left, ...Array<string>(fill).fill('0'), ...right].map((g) => Number.parseInt(g, 16))
+}
+
+/**
+ * The key a per-IP rate limit should count for an address.
+ *
+ * IPv4 addresses count individually. IPv6 addresses count per `/64` prefix: a single customer is
+ * normally given a whole /64 (or more), so keying on the full /128 would let one client rotate
+ * through 2^64 addresses and never hit a limit.
+ */
+export function rateLimitSubject(ip: string): string {
+  const normalized = normalizeIp(ip)
+  if (normalized === undefined) return ip
+  if (isIP(normalized) === 4) return normalized
+  const prefix = ipv6Groups(normalized)
+    .slice(0, 4)
+    .map((g) => g.toString(16))
+    .join(':')
+  return `${prefix}::/64`
+}

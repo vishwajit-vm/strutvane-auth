@@ -12,16 +12,25 @@
  *
  * Identity uses the native engine (in memory, single process): accounts and sessions are lost on
  * restart, so it is for development and tests. On boot it creates the `seedAdmin` account from
- * `config/auth.ts` (role `seedAdmin.role`) so there is always a way in; new sign-ups get
- * `defaultRoles` (none unless configured). The persistent Better Auth engine needs Postgres and is
- * wired by hand (`@strutvane/auth/better-auth`).
+ * `config/auth.ts` (role `seedAdmin.role`) so there is always a way in. The role is bound to the
+ * created account's id (never to the email), and boot fails if the account cannot be created. New
+ * sign-ups get `defaultRoles` (none unless configured). The persistent Better Auth engine needs
+ * Postgres and is wired by hand (`@strutvane/auth/better-auth`).
+ *
+ * Request hardening on the auth endpoints:
+ * - state-changing endpoints (`POST`) refuse cross-site requests (`Sec-Fetch-Site: cross-site`, or
+ *   an `Origin` other than the app URL, the request's own origin or `auth.trustedOrigins`);
+ * - JSON bodies must be sent as `application/json` and are read as a stream, aborted past 16 KiB;
+ * - the socket peer address from the hook payload (`clientAddress`) keys the per-IP rate limits;
+ * - with tenancy on, the `X-Tenant-Id` header is honoured only for tenant-less service actors, and
+ *   anonymous requests are never scoped to a tenant.
  *
  * @module
  */
 import { existsSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import type { Actor } from '@strutvane/contracts'
+import { type Actor, HTTP_HOOKS, type HttpRequestHookPayload } from '@strutvane/contracts'
 import {
   type Application,
   defineProvider,
@@ -34,6 +43,7 @@ import {
   UnauthenticatedError,
 } from '@strutvane/core'
 import { AUTH_ERRORS } from './errors.ts'
+import { attachRequestMeta } from './http/request-meta.ts'
 import type { IdentityResult } from './identity/engine.ts'
 import { createNativeEngine } from './identity/native.ts'
 import { authenticateRequest, problemResponse } from './middleware/core.ts'
@@ -52,6 +62,14 @@ export interface AppAuthConfig {
   /** Roles every self-registered user gets outside tenants. Default: none. */
   readonly defaultRoles?: readonly string[]
   readonly session?: { readonly idleMinutes?: number }
+  /**
+   * Extra origins allowed to call the state-changing auth endpoints (e.g. a SPA served from
+   * another origin: `['https://app.example.com']`). The app URL and the request's own origin are
+   * always allowed.
+   */
+  readonly trustedOrigins?: readonly string[]
+  /** Reverse proxies whose `X-Forwarded-For` may be trusted for rate limiting (addresses or CIDRs). */
+  readonly trustedProxies?: readonly string[]
 }
 
 /** `config/tenancy.ts`. */
@@ -91,12 +109,57 @@ export async function loadPolicies(root: string): Promise<Policy[]> {
   return out
 }
 
-/** Read a JSON body of at most 16 KiB (the framework body limit doesn't cover hook answers). */
+const tooLarge = () => new StrutvaneError('PAYLOAD_TOO_LARGE', { status: 413 })
+
+/**
+ * Read a request body of at most 16 KiB, counting bytes as they stream in and aborting the stream
+ * as soon as the limit is passed (the framework body limit doesn't cover hook answers, and
+ * `request.text()` would buffer an unbounded chunked body first).
+ */
+async function readBody(request: Request): Promise<string> {
+  const declared = request.headers.get('content-length')
+  if (declared !== null && Number(declared) > MAX_BODY_BYTES) throw tooLarge()
+  if (!request.body) return ''
+  const reader = request.body.getReader()
+  const chunks: Uint8Array[] = []
+  let total = 0
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      total += value.byteLength
+      if (total > MAX_BODY_BYTES) {
+        await reader.cancel().catch(() => undefined)
+        throw tooLarge()
+      }
+      chunks.push(value)
+    }
+  } finally {
+    reader.releaseLock()
+  }
+  const bytes = new Uint8Array(total)
+  let offset = 0
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+  } catch {
+    throw new StrutvaneError('MALFORMED_REQUEST', { status: 400 })
+  }
+}
+
+/**
+ * Read a JSON object body. The content type must be `application/json`: a cross-site HTML form can
+ * only send `text/plain`, `multipart/form-data` or `application/x-www-form-urlencoded` without a
+ * CORS preflight, so this also closes the "form posts JSON as text/plain" route.
+ */
 async function readJson(request: Request): Promise<Record<string, unknown>> {
-  const length = Number(request.headers.get('content-length') ?? '0')
-  if (length > MAX_BODY_BYTES) throw new StrutvaneError('PAYLOAD_TOO_LARGE', { status: 413 })
-  const text = await request.text()
-  if (text.length > MAX_BODY_BYTES) throw new StrutvaneError('PAYLOAD_TOO_LARGE', { status: 413 })
+  const type = (request.headers.get('content-type') ?? '').split(';')[0]?.trim().toLowerCase()
+  if (type !== 'application/json')
+    throw new StrutvaneError('UNSUPPORTED_MEDIA_TYPE', { status: 415 })
+  const text = await readBody(request)
   try {
     const value: unknown = JSON.parse(text)
     if (typeof value === 'object' && value !== null && !Array.isArray(value))
@@ -105,6 +168,28 @@ async function readJson(request: Request): Promise<Record<string, unknown>> {
     // fall through
   }
   throw new StrutvaneError('MALFORMED_REQUEST', { status: 400 })
+}
+
+const originOf = (url: string): string | undefined => {
+  try {
+    return new URL(url).origin
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Refuse cross-site calls to state-changing endpoints (defence in depth, on top of `SameSite=Lax`
+ * cookies and the JSON content type). Requests without `Origin` and `Sec-Fetch-Site` (non-browser
+ * clients) pass: they carry no ambient browser credentials.
+ */
+function assertSameSite(request: Request, trusted: ReadonlySet<string>): void {
+  if (request.headers.get('sec-fetch-site')?.toLowerCase() === 'cross-site')
+    throw new StrutvaneError('FORBIDDEN', { status: 403 })
+  const origin = request.headers.get('origin')
+  if (origin === null) return
+  if (origin === originOf(request.url) || trusted.has(origin)) return
+  throw new StrutvaneError('FORBIDDEN', { status: 403 })
 }
 
 const json = (body: unknown, status: number, headers: Headers): Response => {
@@ -165,8 +250,18 @@ export function createAuthProvider(): Provider {
       const seedEmail = cfg.seedAdmin?.email?.toLowerCase()
       const seedRole = cfg.seedAdmin?.role ?? 'admin'
       const defaultRoles = [...(cfg.defaultRoles ?? [])]
+      // The admin role belongs to the seeded ACCOUNT (by id), never to whoever registers the email.
+      let seedUserId: string | undefined
+      const trustedOrigins = new Set<string>()
+      for (const o of [appUrl, ...(cfg.trustedOrigins ?? [])]) {
+        const origin = originOf(o)
+        if (origin === undefined) throw new TypeError(`Invalid trusted origin ${JSON.stringify(o)}`)
+        trustedOrigins.add(origin)
+      }
       const native = createNativeEngine({
         baseURL: appUrl,
+        logger,
+        ...(cfg.trustedProxies ? { trustedProxies: cfg.trustedProxies } : {}),
         deliverPasswordReset: async () => {
           logger.warn('Password reset requested, but no mailer is configured for @strutvane/auth')
         },
@@ -176,14 +271,27 @@ export function createAuthProvider(): Provider {
             context,
             error: error instanceof Error ? error.message : String(error),
           }),
-        globalRoles: ({ email }) => (email === seedEmail ? [seedRole] : defaultRoles),
+        globalRoles: ({ userId }) =>
+          seedUserId !== undefined && userId === seedUserId ? [seedRole] : defaultRoles,
       })
       if (seedEmail && cfg.seedAdmin?.password) {
+        // An in-process call: the server itself is the peer.
+        const seedRequest = attachRequestMeta(
+          new Request(new URL('/_strutvane/seed', appUrl), { method: 'POST' }),
+          { remoteAddress: '127.0.0.1' },
+        )
         const seeded = await native.signUp(
           { email: seedEmail, password: cfg.seedAdmin.password, name: 'Administrator' },
-          new Request(new URL('/_strutvane/seed', appUrl), { method: 'POST' }),
+          seedRequest,
         )
-        if (!seeded.ok) logger.warn('Could not create the seed admin', { code: seeded.error.code })
+        // Fail the boot: otherwise operators are locked out without noticing.
+        if (!seeded.ok)
+          throw new Error(
+            `@strutvane/auth: could not create the seed admin (${seeded.error.code}); check seedAdmin in config/auth.ts`,
+          )
+        seedUserId = seeded.value.actor.id
+      } else if (seedEmail) {
+        logger.warn('seedAdmin.email is set without a password; no seed admin was created')
       }
 
       const base = `${apiBase(section(app, 'api'))}/auth`
@@ -193,8 +301,11 @@ export function createAuthProvider(): Provider {
               tenancy: {
                 resolvers: [
                   sessionResolver(),
-                  // A tenant header is only honoured for members (checked by authenticateRequest).
-                  headerResolver({ trust: () => true }),
+                  // Only tenant-less service actors (internal callers) may pick a tenant by header;
+                  // anonymous and user requests never can.
+                  headerResolver({
+                    trust: ({ actor }) => actor?.type === 'service' && actor.tenantId === undefined,
+                  }),
                 ],
                 strategy: tenancy.strategy ?? 'shared',
               },
@@ -202,9 +313,13 @@ export function createAuthProvider(): Provider {
           : {}
       const hooks = app.make(HooksToken)
       hooks.on(
-        'http.onRequest',
+        HTTP_HOOKS.request,
         async (payload, control) => {
-          const p = payload as { request: Request; actor: Actor | null; tenant: unknown }
+          const p = payload as HttpRequestHookPayload
+          // The socket peer (never a header) keys the per-IP limits. Without it the engine falls
+          // back to a shared bucket (fail closed) and warns once.
+          if (p.clientAddress !== undefined)
+            attachRequestMeta(p.request, { remoteAddress: p.clientAddress })
           const url = new URL(p.request.url)
           const answer = (response: Response) => {
             control.stop()
@@ -213,6 +328,8 @@ export function createAuthProvider(): Provider {
           if (url.pathname.startsWith(`${base}/`)) {
             try {
               const route = `${p.request.method} ${url.pathname.slice(base.length)}`
+              if (p.request.method !== 'GET' && p.request.method !== 'HEAD')
+                assertSameSite(p.request, trustedOrigins)
               switch (route) {
                 case 'POST /sign-up': {
                   if (cfg.registration === false)

@@ -14,6 +14,13 @@
  *   what a policy means.
  * - **Anonymous actors (`null`)** resolve every reference to `null`, so they match nothing through
  *   actor references.
+ * - **Allow rules fail closed under negation** (`{ failClosed: true }`, used by `definePolicy` for
+ *   allow rules). On its own, `ne(field, <null>)` binding to `TRUE` is the exact negation of `eq`,
+ *   but inside an allow rule it would grant every row (likewise `nin`, and `eq`/`in`/ordering
+ *   inside `not`). With `failClosed`, a leaf that depends on a null actor value binds to whatever
+ *   makes the enclosing rule match FEWER rows, given the leaf's polarity: `FALSE` where it is
+ *   positive, `TRUE` under an odd number of `not`s. Null values are still dropped from `in`
+ *   lists where that only narrows the result.
  *
  * @module
  */
@@ -75,8 +82,33 @@ function bindOperand(operand: FilterOperand, actor: Actor | null): Bound {
   return isActorRef(operand) ? resolveActorRef(operand, actor) : operand
 }
 
+/** Options for {@link bindActor}. */
+export interface BindOptions {
+  /**
+   * Bind for an ALLOW rule: a leaf that depends on a null actor value never widens the result,
+   * whatever its polarity (see the module docs). Default `false` (plain "null never matches").
+   */
+  readonly failClosed?: boolean
+}
+
 /** Replace every actor reference with its literal value. Pure; returns a new tree. */
-export function bindActor(filter: QueryFilter, actor: Actor | null): QueryFilter {
+export function bindActor(
+  filter: QueryFilter,
+  actor: Actor | null,
+  options: BindOptions = {},
+): QueryFilter {
+  return bindNode(filter, actor, options.failClosed === true, true)
+}
+
+function bindNode(
+  filter: QueryFilter,
+  actor: Actor | null,
+  failClosed: boolean,
+  positive: boolean,
+): QueryFilter {
+  // With failClosed, an unknown (null) leaf binds to the constant that makes the rule match less:
+  // FALSE where the leaf counts positively, TRUE where an odd number of `not`s will flip it.
+  const narrow = positive ? FALSE : TRUE
   switch (filter.op) {
     case 'true':
     case 'false':
@@ -85,13 +117,19 @@ export function bindActor(filter: QueryFilter, actor: Actor | null): QueryFilter
       return filter
     case 'and':
     case 'or':
-      return { op: filter.op, filters: filter.filters.map((f) => bindActor(f, actor)) }
+      return {
+        op: filter.op,
+        filters: filter.filters.map((f) => bindNode(f, actor, failClosed, positive)),
+      }
     case 'not':
-      return { op: 'not', filter: bindActor(filter.filter, actor) }
+      return { op: 'not', filter: bindNode(filter.filter, actor, failClosed, !positive) }
     case 'eq':
     case 'ne': {
       const value = bindOperand(filter.value, actor)
-      if (value === null) return filter.op === 'eq' ? FALSE : TRUE
+      if (value === null) {
+        if (failClosed) return narrow
+        return filter.op === 'eq' ? FALSE : TRUE
+      }
       return { ...filter, value }
     }
     case 'gt':
@@ -99,21 +137,30 @@ export function bindActor(filter: QueryFilter, actor: Actor | null): QueryFilter
     case 'lt':
     case 'lte': {
       const value = bindOperand(filter.value, actor)
-      return value === null ? FALSE : { ...filter, value }
+      if (value === null) return failClosed ? narrow : FALSE
+      return { ...filter, value }
     }
     case 'in':
     case 'nin': {
       const values: FilterScalar[] = []
+      let sawNull = false
       for (const operand of filter.values) {
         const value = bindOperand(operand, actor)
         if (value !== null) values.push(value)
+        else sawNull = true
+      }
+      if (failClosed && sawNull) {
+        // Dropping nulls narrows a positive `in` (and a negated `nin`); otherwise bind to narrow.
+        const dropNarrows = (filter.op === 'in') === positive
+        if (!dropNarrows) return narrow
       }
       return { ...filter, values }
     }
     case 'between': {
       const from = bindOperand(filter.from, actor)
       const to = bindOperand(filter.to, actor)
-      return from === null || to === null ? FALSE : { ...filter, from, to }
+      if (from === null || to === null) return failClosed ? narrow : FALSE
+      return { ...filter, from, to }
     }
     case 'contains':
     case 'startsWith':

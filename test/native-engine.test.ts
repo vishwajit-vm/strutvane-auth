@@ -44,8 +44,13 @@ describe('native engine specifics', () => {
       req(),
     )
     const jar = store(newJar(), s)
+    const beforeCreate = new Map(jar)
     const t = await engine.createTenant({ name: 'Rot', slug: 'rot' }, req(jar))
     if (!t.ok) throw new Error('no tenant')
+    store(jar, t)
+    // Creating a tenant rotates too: the pre-creation token no longer works.
+    expect([...jar.values()]).not.toEqual([...beforeCreate.values()])
+    expect(await engine.getActor(req(beforeCreate))).toBeNull()
     const before = new Map(jar)
     const sw = await engine.switchTenant({ tenantId: t.value.tenantId.toUpperCase() }, req(jar))
     store(jar, sw)
@@ -183,7 +188,9 @@ describe('native engine specifics', () => {
       req(),
     )
     const jar = store(newJar(), s)
-    expect((await engine.createTenant({ name: 'A', slug: 'dup' }, req(jar))).ok).toBe(true)
+    const first = await engine.createTenant({ name: 'A', slug: 'dup' }, req(jar))
+    expect(first.ok).toBe(true)
+    store(jar, first)
     const dup = await engine.createTenant({ name: 'B', slug: 'dup' }, req(jar))
     expect(dup.ok ? 'ok' : dup.error.code).toBe('VALIDATION_FAILED')
     const bad = await engine.createTenant({ name: 'C', slug: 'Not A Slug' }, req(jar))

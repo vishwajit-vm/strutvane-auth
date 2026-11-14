@@ -11,6 +11,8 @@ export default mergeConfig(
     test: {
       exclude: ['test/integration/**', 'node_modules/**', 'dist/**'],
       testTimeout: 30_000,
+      // PGlite boots a full Postgres in-process; under a loaded machine that can exceed 10 s.
+      hookTimeout: 60_000,
       coverage: {
         // The Better Auth adapter talks to a real Postgres; it is covered by the integration suite.
         exclude: ['src/**/*.test.ts', 'src/**/index.ts', 'src/identity/better-auth.ts'],
