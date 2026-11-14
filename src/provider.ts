@@ -115,6 +115,12 @@ const tooLarge = () => new StrutvaneError('PAYLOAD_TOO_LARGE', { status: 413 })
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const MEMBERS = /^\/tenants\/([^/]+)\/members(?:\/([^/]+))?$/
 const DEFAULT_TENANT_ROLES = ['owner', 'member', 'viewer'] as const
+/** Routes that exist only with tenancy on (`config/tenancy.ts` `enabled: true`). */
+const TENANT_ROUTES: ReadonlySet<string> = new Set([
+  'POST /tenants',
+  'GET /tenants',
+  'POST /switch-tenant',
+])
 
 /**
  * Read a request body of at most 16 KiB, counting bytes as they stream in and aborting the stream
@@ -417,6 +423,10 @@ export function createAuthProvider(): Provider {
                     roles: cfg.roles ? Object.keys(cfg.roles) : DEFAULT_TENANT_ROLES,
                   }),
                 )
+              // Without tenancy the tenant endpoints do not exist: otherwise any signed-in user
+              // could create a tenant and act as its `owner` in an app that never scopes by tenant.
+              if (tenancy?.enabled !== true && TENANT_ROUTES.has(route))
+                return answer(problemResponse(new StrutvaneError('NOT_FOUND', { status: 404 })))
               switch (route) {
                 case 'POST /sign-up': {
                   // Deny by default: only an explicit `registration: true` opens public sign-up.

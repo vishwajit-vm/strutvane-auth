@@ -177,6 +177,37 @@ describe('@strutvane/auth/provider', () => {
     expect(await refused.response?.json()).toMatchObject({ code: 'FORBIDDEN', status: 403 })
   })
 
+  test('without tenancy the tenant endpoints do not exist (no self-assigned tenant roles)', async () => {
+    for (const tenancy of [undefined, { enabled: false }]) {
+      const { send } = await boot(tenancy ? { tenancy } : {})
+      const up = await send('POST', '/api/v1/auth/sign-up', {
+        body: JSON.stringify({
+          email: 'solo@app.test',
+          password: 'a-long-enough-password',
+          name: 'S',
+        }),
+      })
+      const cookie = cookieOf(up.response)
+      expect(cookie).not.toBe('')
+      const created = await send('POST', '/api/v1/auth/tenants', {
+        cookie,
+        body: JSON.stringify({ name: 'Mine', slug: 'mine' }),
+      })
+      expect(created.response?.status).toBe(404)
+      expect((await send('GET', '/api/v1/auth/tenants', { cookie })).response?.status).toBe(404)
+      const switched = await send('POST', '/api/v1/auth/switch-tenant', {
+        cookie,
+        body: JSON.stringify({ tenantId: '0190a000-0000-7000-8000-00000000000b' }),
+      })
+      expect(switched.response?.status).toBe(404)
+      // The session is untouched: still the same actor, holding no tenant role.
+      const me = await send('GET', '/api/v1/auth/me', { cookie })
+      const body = (await me.response?.json()) as { actor: Record<string, unknown> }
+      expect(body.actor).toMatchObject({ roles: [] })
+      expect(body.actor).not.toHaveProperty('tenantId')
+    }
+  })
+
   test('rejects malformed and oversized bodies and unknown auth routes', async () => {
     const { send } = await boot()
     expect((await send('POST', '/api/v1/auth/sign-in', { body: '{' })).response?.status).toBe(400)
