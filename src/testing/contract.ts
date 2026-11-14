@@ -357,6 +357,31 @@ export function runIdentityContract(label: string, factory: EngineFactory): void
           code(await engine.signIn({ email: address, password: TEST_NEW_PASSWORD }, req())),
         ).toBe('ok')
       })
+
+      test('a completed reset invalidates every other outstanding reset token of that user', async () => {
+        const { address } = await signedUpUser('reset-siblings')
+        await engine.startPasswordReset({ email: address }, req())
+        const older = await mailbox.waitForToken(address)
+        await engine.startPasswordReset({ email: address }, req())
+        const newer = await mailbox.waitForNewToken(address, older)
+        expect(
+          (
+            await engine.completePasswordReset(
+              { token: newer, newPassword: TEST_NEW_PASSWORD },
+              req(),
+            )
+          ).ok,
+        ).toBe(true)
+        // A link mailed earlier (possibly to a mailbox someone else could read) is dead too.
+        const stale = await engine.completePasswordReset(
+          { token: older, newPassword: 'a password the owner never chose' },
+          req(),
+        )
+        expect(code(stale)).toBe('INVALID_TOKEN')
+        expect(
+          code(await engine.signIn({ email: address, password: TEST_NEW_PASSWORD }, req())),
+        ).toBe('ok')
+      })
     })
 
     describe('tenants and roles', () => {

@@ -105,6 +105,16 @@ export class Mailbox {
       await new Promise((r) => setTimeout(r, 10))
     }
   }
+  /** Wait for a token other than `previous` (a second reset request for the same address). */
+  async waitForNewToken(address: string, previous: string, timeoutMs = 5000): Promise<string> {
+    const deadline = Date.now() + timeoutMs
+    for (;;) {
+      const token = this.tokenFor(address)
+      if (token && token !== previous) return token
+      if (Date.now() > deadline) throw new Error(`no new reset token delivered to ${address}`)
+      await new Promise((r) => setTimeout(r, 10))
+    }
+  }
 }
 
 let counter = 0

@@ -15,6 +15,8 @@
  *   resolved IP in a private header that clients cannot inject (only allow-listed headers are
  *   forwarded). IPv6 clients count per /64. A request without a peer address counts against one
  *   shared fallback bucket (fail closed) unless `allowMissingPeer` is set.
+ * - A completed password reset also deletes every other outstanding reset token of that user
+ *   (Better Auth only consumes the one used), so an older mailed link cannot reset again.
  * - `minPasswordLength: 12`, `revokeSessionsOnPasswordReset`, background tasks (constant-time
  *   reset), `onAPIError.throw` routed to the reporter (never stderr), UUID ids validated at the
  *   boundary before any database call.
@@ -118,6 +120,8 @@ const FORWARDED_HEADERS = [
 /** The private header carrying the resolved client IP. Incoming copies are never forwarded. */
 const CLIENT_IP_HEADER = 'x-strutvane-client-ip'
 const BASE_PATH = '/api/auth'
+/** Better Auth's `verification.identifier` prefix for password-reset tokens (tripwire-tested). */
+const RESET_PREFIX = 'reset-password:'
 const EMAIL = /^[^\s@]{1,64}@[^\s@]{1,190}\.[^\s@]{2,63}$/
 const ROLE = /^[a-z][a-z0-9_-]{0,63}$/
 const SLUG = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/
@@ -511,11 +515,27 @@ export function createBetterAuthEngine(options: BetterAuthEngineOptions): Better
       guarded('completePasswordReset', async () => {
         if (typeof input.token !== 'string' || input.token.length > 200)
           return fail('INVALID_TOKEN')
+        // Better Auth consumes only the token used; every other reset link already mailed to the
+        // user stays valid. Read the owner first (the row is gone once the reset succeeds), so the
+        // siblings can be deleted afterwards, as the native engine does.
+        const ctx = await auth.$context
+        const pending = await ctx.adapter.findOne<{ value: string }>({
+          model: 'verification',
+          where: [{ field: 'identifier', value: `${RESET_PREFIX}${input.token}` }],
+        })
         const res = await call('POST', '/reset-password', request, {
           token: input.token,
           newPassword: input.newPassword,
         })
         if (res.status !== 200) return toFailure(res)
+        if (pending && typeof pending.value === 'string' && pending.value.length > 0)
+          await ctx.adapter.deleteMany({
+            model: 'verification',
+            where: [
+              { field: 'identifier', operator: 'starts_with', value: RESET_PREFIX },
+              { field: 'value', value: pending.value },
+            ],
+          })
         return ok(null, res.headers)
       }),
 
