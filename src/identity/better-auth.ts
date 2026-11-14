@@ -15,6 +15,8 @@
  *   resolved IP in a private header that clients cannot inject (only allow-listed headers are
  *   forwarded). IPv6 clients count per /64. A request without a peer address counts against one
  *   shared fallback bucket (fail closed) unless `allowMissingPeer` is set.
+ * - Better Auth's origin check for cookie-authenticated writes is pinned on (it otherwise
+ *   switches itself off under `NODE_ENV=test`).
  * - A completed password reset also deletes every other outstanding reset token of that user
  *   (Better Auth only consumes the one used), so an older mailed link cannot reset again.
  * - `minPasswordLength: 12`, `revokeSessionsOnPasswordReset`, background tasks (constant-time
@@ -178,6 +180,10 @@ function build(options: BetterAuthEngineOptions, report: ErrorReporter) {
     // store and trusted-proxy IP resolution (see the module docs).
     rateLimit: { enabled: false },
     advanced: {
+      // Better Auth turns its origin (CSRF) check off by itself whenever it detects a test
+      // environment (NODE_ENV=test). Pin it on, so security does not depend on an env variable
+      // and the integration suite exercises the production behaviour.
+      disableOriginCheck: false,
       // Tenant ids flow into `NULLIF(current_setting('app.tenant_id', true), '')::uuid` (ADR-0007).
       database: { generateId: 'uuid' },
       ipAddress: { ipAddressHeaders: [CLIENT_IP_HEADER] },

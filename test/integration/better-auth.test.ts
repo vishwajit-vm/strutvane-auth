@@ -161,6 +161,32 @@ describe('Better Auth specifics', () => {
     expect(actor?.roles).toEqual([])
   })
 
+  test("Better Auth's origin check stays on in every environment (it switches itself off under NODE_ENV=test)", async () => {
+    expect(process.env['NODE_ENV']).toBe('test') // the condition under which Better Auth skips it
+    const s = await engine.signUp(
+      { email: testEmail('origin'), password: TEST_PASSWORD, name: 'O' },
+      req(),
+    )
+    const jar = store(newJar(), s)
+    const slug = () => `origin-${randomBytes(3).toString('hex')}`
+    // A cookie-authenticated write from a foreign origin, and one with no origin at all.
+    const foreign = browserRequest('https://evil.example', { jar, ip: freshIp() })
+    const fromForeign = await engine.createTenant(
+      { name: 'X', slug: slug() },
+      new Request(`${DEV}/`, { method: 'POST', headers: foreign.headers }),
+    )
+    expect(fromForeign.ok ? 'ok' : fromForeign.error.code).toBe('FORBIDDEN')
+    const bare = new Headers(foreign.headers)
+    bare.delete('origin')
+    const fromNowhere = await engine.createTenant(
+      { name: 'X', slug: slug() },
+      new Request(`${DEV}/`, { method: 'POST', headers: bare }),
+    )
+    expect(fromNowhere.ok ? 'ok' : fromNowhere.error.code).toBe('FORBIDDEN')
+    // The same write from the app's own origin works.
+    expect((await engine.createTenant({ name: 'X', slug: slug() }, req(jar))).ok).toBe(true)
+  })
+
   test('a client-sent x-strutvane-client-ip header is never forwarded (cannot poison the stored session IP)', async () => {
     const r = browserRequest(DEV, { ip: '198.51.100.77' })
     r.headers.set('x-strutvane-client-ip', '6.6.6.6')
