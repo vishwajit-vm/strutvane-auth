@@ -124,6 +124,8 @@ const CLIENT_IP_HEADER = 'x-strutvane-client-ip'
 const BASE_PATH = '/api/auth'
 /** Better Auth's `verification.identifier` prefix for password-reset tokens (tripwire-tested). */
 const RESET_PREFIX = 'reset-password:'
+/** Longest display name accepted (the native engine's bound). */
+const MAX_NAME = 200
 const EMAIL = /^[^\s@]{1,64}@[^\s@]{1,190}\.[^\s@]{2,63}$/
 const ROLE = /^[a-z][a-z0-9_-]{0,63}$/
 const SLUG = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/
@@ -447,7 +449,10 @@ export function createBetterAuthEngine(options: BetterAuthEngineOptions): Better
           typeof input.email !== 'string' ||
           !EMAIL.test(input.email) ||
           typeof input.password !== 'string' ||
-          typeof input.name !== 'string'
+          typeof input.name !== 'string' ||
+          // Same bounds as the native engine and createUserAsSystem; Better Auth accepts any name.
+          input.name.length === 0 ||
+          input.name.length > MAX_NAME
         ) {
           return fail('VALIDATION_FAILED')
         }
@@ -687,7 +692,7 @@ export function createBetterAuthEngine(options: BetterAuthEngineOptions): Better
           input.password.length > 128 ||
           typeof input.name !== 'string' ||
           input.name.length === 0 ||
-          input.name.length > 200
+          input.name.length > MAX_NAME
         ) {
           return fail('VALIDATION_FAILED')
         }

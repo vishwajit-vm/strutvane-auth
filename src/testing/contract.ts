@@ -130,6 +130,13 @@ export function runIdentityContract(label: string, factory: EngineFactory): void
           req(),
         )
         expect(code(bad)).toBe('VALIDATION_FAILED')
+        for (const name of ['', 'n'.repeat(201)]) {
+          const result = await engine.signUp(
+            { email: testEmail('name'), password: TEST_PASSWORD, name },
+            req(),
+          )
+          expect(code(result)).toBe('VALIDATION_FAILED')
+        }
       })
 
       test('a duplicate email (any case) returns EMAIL_UNAVAILABLE', async () => {
