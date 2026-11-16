@@ -1,0 +1,12 @@
+---
+"@strutvane/auth": minor
+---
+
+**Strutvane's own identity engine is now the default (ADR-0023).** This is a breaking release: pre-1.0, breaking changes ride a minor bump (blueprint §8, CONSISTENCY #128). Read "Migrating from v1" in the README.
+
+- **New engine** (from spike 20, with all its tests and both audit rounds): email + password, email verification, password reset, passwordless email links, TOTP two-factor with recovery codes, passkeys (`@simplewebauthn/server`), sessions, personal access tokens, teams and impersonation. Each sign-in option is a feature switch in `config/auth.ts` `features`, using CONSISTENCY #25/#107's names: `password`, `registration`, `emailVerification`, `passwordReset`, `passwordConfirmation`, `twoFactor`, `passkeys`, `emailLink`, `apiTokens`, `teams`, `impersonation`. Every secret is stored as a keyed digest, cookies are `__Host-` on https, and account pre-hijacking is closed (#114, #122). The last-admin guard and the passkey counter are atomic (#117).
+- **Storage** goes through a store port: PostgreSQL (`@strutvane/auth/postgres`, on the framework's `Database` in an app), SQLite (`@strutvane/auth/sqlite`) and memory. The identity tables ship as ordinary migrations (`migrations/{postgres,sqlite}`), applied by `migrate`.
+- **Provider:** it binds `SessionCookieToken`, so the session layer and the framework's CSRF check use one cookie name (#105). The engine's routes are served under `{api}/auth` (Laravel Fortify's names), alongside the v1 endpoints. Mail goes through `AuthMailerToken`. Auth domain events go to the framework event bus: `auth.user.registered`, `auth.login.failed`, `auth.role.assigned`, `tenant.created` and more.
+- **Contract:** `IdentityEngine` error codes are lowercase `snake_case` (#68), plus the new codes `two_factor_required` and `email_not_verified`. Field issues are `{ path, field, code, message }` (#69). Signed links answer 403 `invalid_signature` / `signature_expired` (#67). The contract kit takes each engine's tenant-owner role, which is `admin` for the native engine.
+- **Better Auth is deprecated:** `@strutvane/auth/better-auth` stays, logs one `DeprecationWarning` and is removed no earlier than 0.3. Apps reach it only with `identity: 'better-auth'`. Its v1 package migration moved to `migrations-better-auth/`.
+- **One kernel:** `@strutvane/framework` is a peer (`^0.1.0-next.1 || ^0.2.0-next.0`). Requires Node.js 24.3 or newer.

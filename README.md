@@ -2,9 +2,9 @@
 
 # Strutvane Auth
 
-**Enterprise authentication and authorization for TypeScript apps: identity adapters, RBAC/ABAC compiled to SQL, multi-tenancy with row-level security, audit logs, SSO/SCIM, plus ready-made auth API and screens.**
+**Enterprise authentication and authorization for TypeScript apps: Strutvane's own identity engine (passwords, email links, 2FA, passkeys, API tokens, teams, impersonation), RBAC/ABAC compiled to SQL, multi-tenancy with row-level security and audit.**
 
-[![Status: 0.1.0-next](https://img.shields.io/badge/status-0.1.0--next-orange)](https://github.com/vishwajit-vm/strutvane/blob/main/docs/14-roadmap.md)
+[![Status: 0.2.0-next](https://img.shields.io/badge/status-0.2.0--next-orange)](https://github.com/vishwajit-vm/strutvane/blob/main/docs/14-roadmap.md)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178c6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![Part of Strutvane](https://img.shields.io/badge/ecosystem-Strutvane-1f3a5f)](https://github.com/vishwajit-vm/strutvane)
@@ -12,24 +12,26 @@
 </div>
 
 > [!NOTE]
-> **Status: `0.1.0-next.0`, the authorization, tenancy, identity and audit core is implemented and tested, but not yet released to npm.** It follows [ADR-0007](https://github.com/vishwajit-vm/strutvane/blob/main/docs/adr/0007-tenancy-rls-enforcement-rules.md) (tenancy), [ADR-0008](https://github.com/vishwajit-vm/strutvane/blob/main/docs/adr/0008-policy-predicates-two-valued-semantics.md) (policy semantics) and [ADR-0013](https://github.com/vishwajit-vm/strutvane/blob/main/docs/adr/0013-better-auth-hardened-adapter.md) (Better Auth). The API may still change before `0.1.0`. See [what's not built yet](#not-built-yet).
+> **Status: `0.2.0-next`: the native identity engine ([ADR-0023](https://github.com/vishwajit-vm/strutvane/blob/main/docs/adr/0023-native-identity-engine-default.md)), authorization, tenancy and audit are implemented and tested, and not released to npm yet.** It follows [ADR-0007](https://github.com/vishwajit-vm/strutvane/blob/main/docs/adr/0007-tenancy-rls-enforcement-rules.md) (tenancy) and [ADR-0008](https://github.com/vishwajit-vm/strutvane/blob/main/docs/adr/0008-policy-predicates-two-valued-semantics.md) (policy semantics). Coming from v1? See [Migrating from v1](#migrating-from-v1-better-auth--native).
 
 ## What it is
 
 Strutvane Auth is part of **[Strutvane](https://github.com/vishwajit-vm/strutvane)**, a TypeScript framework and package ecosystem for building enterprise B2B applications. It works **standalone** in any Node app, or **integrated** with `@strutvane/framework`, which talks to it only through the contracts `PermissionProvider` (so the two never import each other).
 
-It depends only on [`@strutvane/core`](https://github.com/vishwajit-vm/strutvane-core) and [`@strutvane/contracts`](https://github.com/vishwajit-vm/strutvane-contracts). Better Auth, Hono, `pg` and Vitest are optional peers, used only by the subpaths that need them.
+It peer-depends on [`@strutvane/framework`](https://github.com/vishwajit-vm/strutvane-framework) (`^0.1.0-next.1 || ^0.2.0-next.0`), so an app has exactly one kernel. Its one runtime dependency is `@simplewebauthn/server` (MIT), for passkeys. `pg`, Hono, Vitest and `better-auth` (for the deprecated adapter) are optional peers, used only by the subpaths that need them. It needs Node.js 24.3 or newer.
 
 ## What's inside
 
 | Entry point | What you get |
 |---|---|
-| `@strutvane/auth` | `definePolicy` (typed predicate builder, allow/deny, deny wins, deny by default, field rules, `explain()`), `createPermissionProvider`, the tenant resolver chain, `recordAudit`, the native identity engine, rate limiting and the framework-agnostic middleware core. |
+| `@strutvane/auth` | The native identity engine (`createNativeEngine`, `createAuth`, the in-memory store, `createAuthHandler`), `definePolicy` (typed predicate builder, allow/deny, deny wins, deny by default, field rules, `explain()`), `createPermissionProvider`, the tenant resolver chain, `recordAudit`, `AuthMailerToken`, the domain-event names and the framework-agnostic middleware core. |
 | `@strutvane/auth/sql` | `compileToSql`: a policy or UI filter → a parameterised, two-valued, NULL-safe Postgres `WHERE` fragment. |
-| `@strutvane/auth/postgres` | `withTenant`, RESTRICTIVE row-level-security and role migration SQL, `tenancyAudit`, the `findSessionSet` lint, and a shared Postgres rate-limit store. |
-| `@strutvane/auth/better-auth` | The hardened Better Auth adapter (needs `better-auth` and `pg`). |
+| `@strutvane/auth/postgres` | The PostgreSQL identity store (`postgresAuthStore`, `postgresCounterStore`, `pgPoolClient`, `pgliteClient`, `frameworkDatabaseClient`), `withTenant`, RESTRICTIVE row-level-security and role migration SQL, `tenancyAudit` and the `findSessionSet` lint. |
+| `@strutvane/auth/sqlite` | The SQLite identity store on `node:sqlite`. |
+| `@strutvane/auth/better-auth` | **Deprecated** (ADR-0023): the v1 Better Auth adapter (needs `better-auth` and `pg`), removed no earlier than 0.3. |
 | `@strutvane/auth/hono`, `@strutvane/auth/node` | Auth middleware for Hono, and for `node:http` / Express (connect-style). |
-| `@strutvane/auth/testing` | The identity-engine contract suite (run it against any adapter) and test helpers. |
+| `@strutvane/auth/testing` | The identity-engine contract suite (run it against any engine) and test helpers. |
+| `@strutvane/auth/provider`, `/admin`, `/commands` | The Strutvane app provider, the seeder API and the CLI commands. |
 
 ## Quick start: policies that compile to SQL
 
@@ -121,103 +123,120 @@ Run `tenancyAudit(pool)` in CI or `sv doctor`. It flags:
 
 `relationKeyAudit(pool, schemas)` checks that every policy relation points at a unique key (relation fields compile to scalar subqueries). `withTenant` rejects with `TransactionAbortedError` when Postgres rolled the transaction back because a statement inside it failed and the error was caught.
 
-## Identity and middleware
+## Identity: Strutvane's own engine
+
+The default identity engine is Strutvane's own ([ADR-0023](https://github.com/vishwajit-vm/strutvane/blob/main/docs/adr/0023-native-identity-engine-default.md)). It covers every sign-in option the installer offers, and its only runtime dependency is `@simplewebauthn/server` for passkeys; everything else uses `node:crypto`.
+
+| Feature (`config/auth.ts` `features`) | Default | What you get |
+|---|---|---|
+| `password` | on | Email + password sign-in (scrypt `ln=17`, rehash on login, timing-safe, one `invalid_credentials` for every failure), per-IP (IPv6 `/64`) and per-account limits, lockout with backoff |
+| `passwordReset` | follows `password` | 60-minute single-use links, stored as keyed digests; a reset signs out everywhere |
+| `passwordConfirmation` | on | "Confirm your password" (3 h) before 2FA, token, passkey and session changes and impersonation |
+| `registration` | off | Public sign-up (B2B apps are invite-only by default) |
+| `emailVerification` | off | Signed links (`403 invalid_signature` / `signature_expired` when edited or late); password sign-in waits for the proof (account pre-hijacking protection) |
+| `emailLink` | off | Passwordless links bound to the requesting browser (`__Host-` nonce; https outside local) |
+| `twoFactor` | off | TOTP (RFC 6238) with 8–10 recovery codes, replay protection, "remember this device" |
+| `passkeys` | off | WebAuthn: passwordless sign-in, second factor, several per user |
+| `apiTokens` | off | Personal access tokens (`svp_…`, shown once, keyed digest, abilities, expiry) |
+| `teams` | off (on with tenancy) | Teams as tenants: invitations, roles, last-admin guard, switching rotates the session |
+| `impersonation` | off | Global `admin` only, after confirmation, never another admin, audited with actor and subject |
+
+A switched-off feature has no routes (the same 404 as an unknown path) and its services refuse too. Every secret (session ids, reset and email-link tokens, recovery codes, PATs, invitations) is stored only as an HMAC under `APP_KEY`. Cookies are `__Host-` on https. Error codes are lowercase `snake_case`, and field issues are `{ path, field, code, message }`.
+
+```ts
+import { createNativeEngine } from '@strutvane/auth'
+import { pgPoolClient, postgresAuthStore, postgresCounterStore } from '@strutvane/auth/postgres'
+
+const db = pgPoolClient(pool) // a node-postgres Pool; the tables come from the shipped migration
+const engine = createNativeEngine({
+  baseURL: 'https://app.example.com',
+  appKey: process.env.APP_KEY, // required with a persistent store
+  store: postgresAuthStore(db),
+  counters: postgresCounterStore(db), // rate limits shared by every instance
+  config: { features: { twoFactor: true, emailVerification: true } },
+  mailer: { send: (mail) => queue.push('auth-mail', mail) }, // every mail carries one secret link
+})
+
+const { actor } = await engine.authenticate(request) // never throws; anonymous on any doubt
+await engine.auth.twoFactor.enable(req) // the full engine, for your own routes and screens
+```
+
+**Stores.** The engine reads and writes only through a store port with atomic single-use and guard operations:
+
+| Store | Entry point | Use |
+|---|---|---|
+| PostgreSQL | `@strutvane/auth/postgres`: `postgresAuthStore`, `postgresCounterStore` over `pgPoolClient(pool)`, `pgliteClient(db)` or `frameworkDatabaseClient(app.make(DatabaseToken))` | Production. In an app it shares the framework's `Database` |
+| SQLite | `@strutvane/auth/sqlite`: `sqliteAuthStore`, `sqliteCounterStore` on `node:sqlite` | SQLite apps (the app's own database file) |
+| Memory | `memoryAuthStore`, `memoryCounterStore` | Tests and demos |
+
+The ORM-backed store plugs in at the same port once the framework ORM lands: it implements the 46 store methods over the same tables and passes the same store contract (`test/engine/store-contract.test.ts`).
+
+**Tables** ship as ordinary migrations in the framework's format, `migrations/{postgres,sqlite}/…_create_auth_tables.sql`. `migrate` applies them, and `auth:migration` copies them into your app's `database/migrations`.
+
+Every engine implements `IdentityEngine`, so the provider, the middleware and the tenancy layer don't care which one runs. `@strutvane/auth/testing` holds the contract suite, which runs against the native engine and the deprecated Better Auth adapter.
+
+### Middleware outside a Strutvane app
 
 ```ts
 import { Hono } from 'hono'
 import { sessionResolver } from '@strutvane/auth'
-import { createBetterAuthEngine } from '@strutvane/auth/better-auth'
 import { type AuthVariables, authMiddleware } from '@strutvane/auth/hono'
-import { postgresRateLimitStore } from '@strutvane/auth/postgres'
-
-const engine = createBetterAuthEngine({
-  pool,
-  baseURL: 'https://app.example.com',
-  secret: env.AUTH_SECRET, // ≥ 32 random characters, from your secret store
-  rateLimitStore: postgresRateLimitStore(pool), // shared by every process
-  trustedProxies: ['10.0.0.0/8'], // X-Forwarded-For is honoured only from these
-  deliverPasswordReset: ({ email, token }) => mailer.sendReset(email, token),
-  onUnexpectedError: (context, error) => logger.error(context, { err: error }),
-})
 
 const app = new Hono<{ Variables: AuthVariables }>()
 app.use(authMiddleware({ engine, tenancy: { resolvers: [sessionResolver()] } }))
 app.get('/me', (c) => c.json(c.get('actor')))
 ```
 
-Every engine implements `IdentityEngine` and returns results, never throws: stable error codes, cookies as headers, and `authenticate(request) → { actor, headers }` that fails closed. The **native engine** (`createNativeEngine`) is in-memory and meant for development and tests.
-
-Per-IP rate limits need the socket peer address (`attachRequestMeta`, done by the `/node` and `/hono` adapters, or `clientAddress` on the `http.onRequest` hook). A request without one counts against a single shared fallback bucket, and the engine warns once through its `logger`. Set `allowMissingPeer: true` only for hosts that knowingly have no socket; the per-account limit applies either way.
+Per-IP rate limits need the socket peer address (`attachRequestMeta`, done by the `/node` and `/hono` adapters, or `clientAddress` on the `http.onRequest` hook). A request without one counts against a single shared fallback bucket, and the engine warns once through its `logger`.
 
 ## In a Strutvane app
 
-`create-strutvane` registers `@strutvane/auth/provider` in `strutvane.config.ts`. It plugs into the app only
-through core (container token + hooks), never by importing the framework:
+`create-strutvane` registers `@strutvane/auth/provider` in `strutvane.config.ts`. It connects to the app only through the framework kernel (container tokens, hooks, events), never by importing another product package:
 
-- **Permissions:** loads `app/policies/*.policy.ts` at boot, combines them with the role map of
-  `config/auth.ts` (`roles`, `wildcardExclude`, `newModelDefaults`; see "Roles" above) and binds
-  `PermissionProviderToken` (deny-by-default). A policy gets its schema from the model:
-  `definePolicy('invoice', { schema: policySchema(Invoice) }, ({ allow }) => { … })`
-  (`policySchema` comes from `@strutvane/framework`).
-- **Field rules:** a policy's `field('amount').readable({ role })` and `.writable({ role })` are
-  enforced on every API record: the framework's `resource.serialize` hook drops fields the actor may
-  not read (lists, show, write responses and included relations), and `resource.beforeWrite` refuses
-  (403) a create or update that sends a field the actor may not write. Filters, sorts and search on
-  unreadable fields are refused through `filterableFields`.
-- **Identity:** an `http.onRequest` hook (`auth.identity`) resolves the actor (and, with
-  `config/tenancy.ts` `enabled: true`, the tenant from the session). `X-Tenant-Id` is honoured only
-  for tenant-less service actors, and anonymous requests are never scoped to a tenant. The hook's
-  `clientAddress` (socket peer) keys the per-IP rate limits; set `auth.trustedProxies` when the app
-  runs behind a reverse proxy.
-- **Endpoints** under the API base path: `POST /auth/sign-up` (only with `registration: true`;
-  public sign-up is off by default),
-  `POST /auth/sign-in`, `POST /auth/sign-out`, `GET /auth/me`, and for tenancy `POST|GET /auth/tenants`
-  and `POST /auth/switch-tenant` (members only; the creator becomes `owner`, and the session token
-  rotates). `POST` endpoints refuse cross-site requests (`Sec-Fetch-Site: cross-site`, or an `Origin`
-  other than the app URL, the request's own origin or `auth.trustedOrigins`) and require
-  `application/json`. Bodies are read as a stream and cut off at 16 KiB. Failures are RFC 9457 problems.
-- **Role names** (docs/07 §2.7): `admin`, `member`, `viewer`, and with tenancy `owner` (the tenant's
-  creator, held inside that tenant only).
-- **Roles outside tenants:** the `seedAdmin` account from `config/auth.ts` is created at boot with
-  `seedAdmin.role`. The role is bound to that account's id, never to the email, and boot fails if the
-  account cannot be created. Self-registered users get `defaultRoles` (none unless configured). Engines
-  can supply them through the `globalRoles` option of `createNativeEngine`.
+- **Engine and store:** the native engine on the app's database. On PostgreSQL it uses the framework's `Database` (`DatabaseToken`), so there is one pool. On SQLite it uses the same database file. It needs `APP_KEY` and the migrated tables, and boot fails with the fix named when either is missing. Use `session: { driver: 'memory' }` for development and tests. MySQL waits for the framework ORM: until then the identity is kept in memory, with a warning.
+- **One cookie-name source (#105):** in `register()` the provider binds `SessionCookieToken` from `config/session.ts` `cookie` (default `strutvane_session`, `__Host-` on https). The engine names its session cookie from that same value, and the framework's CSRF check reads the token. A token bound elsewhere is followed, and a name the engine can't set fails the boot.
+- **Permissions:** loads `app/policies/*.policy.ts` at boot, combines them with the role map of `config/auth.ts` (`roles`, `wildcardExclude`, `newModelDefaults`; see "Roles") and binds `PermissionProviderToken` (deny-by-default). Role names come from the role map's keys (plus `admin`, the role that manages a team) or from `rolePreset` (`admin-member`, `admin-manager-member-viewer`).
+- **Field rules:** `field('amount').readable({ role })` and `.writable({ role })` are enforced on every API record through the framework's `resource.serialize` and `resource.beforeWrite` hooks; filters, sorts and search on unreadable fields are refused through `filterableFields`.
+- **Identity on every request:** an `http.onRequest` hook (`auth.identity`) resolves the actor (and, with `config/tenancy.ts` `enabled: true`, the tenant from the session). `X-Tenant-Id` is honoured only for tenant-less service actors. The hook's `clientAddress` keys the per-IP limits; set `auth.trustedProxies` behind a reverse proxy.
+- **Routes** under `{api}/auth` (by default `/api/v1/auth`):
+  - the engine's own routes, under Laravel Fortify's names: `POST /login`, `/logout`, `/register`, `/forgot-password`, `/reset-password`, `/two-factor-challenge`, `/email-link`, `GET /email/verify/:id/:hash`, `/user`, `/user/sessions`, `/user/password`, `/user/confirm-password`, `/user/two-factor-authentication`, `/user/passkeys`, `/user/api-tokens`, `/teams/…`, `/impersonate/…`. Each exists only while its feature is on;
+  - the v1 endpoints, kept so existing clients keep working: `POST /sign-up` (only with `registration`), `/sign-in`, `/sign-out`, `GET /me`, and with tenancy `POST|GET /tenants`, `POST /switch-tenant` and the member endpoints `GET|POST /tenants/:id/members`, `DELETE /tenants/:id/members/:userId`.
 
-- **Persistent identity:** with `session: { driver: 'database' }` (the generated default, from
-  `AUTH_SESSION_DRIVER`) on PostgreSQL, the provider runs the hardened Better Auth engine on the
-  app's own database: accounts, sessions, tenants and memberships survive restarts and are shared by
-  every process, and rate-limit counters live in `strutvane_rate_limits`. It needs the `better-auth`
-  and `pg` packages and a 32+ character `secret`. The tables come with `pnpm sv migrate`: the package
-  ships them as a package migration (`migrations/postgres/`, idempotent) that
-  `@strutvane/framework` applies with the app's own. Boot fails with that instruction while they
-  are missing. `pnpm sv auth:migration` writes them into `database/migrations` instead (apps
-  without the framework's migrator, or a schema upgrade).
-  `driver: 'memory'`, or any other database, uses the native in-memory engine (development and
-  tests; a warning says so).
-- **Members:** a tenant's owners list, add and remove members over HTTP:
-  `GET|POST /auth/tenants/:id/members` (`{ "email", "role" }`: an existing account and a role from
-  `config/auth.ts`; re-posting changes the role) and `DELETE /auth/tenants/:id/members/:userId`. The
-  last owner cannot be removed or demoted. Anyone else (members, viewers, the platform admin, a
-  forged tenant id) gets the same 403. Role changes apply on the member's next request.
-- **Scripts and seeders:** `openIdentityAdmin()` from `@strutvane/auth/admin` builds the same engine
-  from the project's `.env` and `config/` and offers idempotent `ensureUser`, `ensureTenant` and
-  `setMember` (it refuses an in-memory store, whose writes would vanish):
+  Unsafe requests must come from the app's own origin (on top of the framework's CSRF check), bodies must be `application/json` and are cut off at 16 KiB, and failures are RFC 9457 problems.
+- **Tenants are teams.** A tenant's creator is its `admin`, held inside that tenant only. The last admin can be neither removed nor demoted: the guard is one atomic store operation.
+- **Seed admin:** the `seedAdmin` account is created once at boot, and its role (`seedAdmin.role`, default `admin`) is stored with the account (`user_roles`). Self-registered users get `defaultRoles`.
+- **Mail:** bind a mailer under `AuthMailerToken` (`{ send(mail) }`). Without one, mails are dropped with a warning that names only the mail kind, never the link.
+- **Domain events** on the framework event bus: `auth.user.registered`, `auth.login.succeeded`, `auth.login.failed`, `auth.lockout`, `auth.logout`, `auth.password.changed`, `auth.email.verified`, `auth.two_factor.enabled|disabled`, `auth.passkey.added|removed`, `auth.token.created|revoked`, `auth.session.revoked`, `auth.role.assigned`, `auth.impersonation.started|stopped`, and `tenant.created`, `tenant.switched`, `tenant.invitation.created|accepted`, `tenant.member.changed` (`AUTH_DOMAIN_EVENTS`). Payloads carry ids and enums only, with no IP address. The actor is the user (or the impersonating admin), and `tenant.*` events carry the tenant.
+- **Scripts and seeders:** `openIdentityAdmin()` from `@strutvane/auth/admin` builds the same engine from the project's `.env` and `config/`, and offers idempotent `ensureUser`, `ensureTenant` and `setMember`:
 
   ```ts
   const idp = await openIdentityAdmin()
   try {
-    const acme = await idp.ensureTenant({ name: 'Acme', slug: 'acme', ownerEmail: 'olivia@acme.test' })
-    await idp.setMember({ tenant: 'acme', email: 'vic@acme.test', role: 'viewer' })
+    await idp.ensureTenant({ name: 'Acme', slug: 'acme', ownerEmail: 'olivia@acme.test' })
+    await idp.setMember({ tenant: 'acme', email: 'vic@acme.test', role: 'member' })
   } finally {
     await idp.close()
   }
   ```
-- **Commands** (contributed to `sv`): `auth:migration`, `auth:user:create --email --name
-  --password-env VAR` (the password is read from that environment variable, never a flag),
-  `tenant:create --name --slug --owner <email>` and `tenant:member:add --tenant <slug> --email
-  --role`.
+- **Commands:** `auth:migration`, `auth:user:create --email --name --password-env VAR` (the password comes from that environment variable, never a flag), `tenant:create --name --slug --owner <email>` and `tenant:member:add --tenant <slug> --email --role`.
+
+## Migrating from v1 (Better Auth → native)
+
+Version 0.2 makes the native engine the default ([ADR-0023](https://github.com/vishwajit-vm/strutvane/blob/main/docs/adr/0023-native-identity-engine-default.md)). The Better Auth adapter still exists, deprecated, at `@strutvane/auth/better-auth`. It prints one `DeprecationWarning` (code `STRUTVANE_AUTH_BETTER_AUTH`) and will be removed no earlier than 0.3. These v1 findings remain open on it: raw session and reset tokens in the database, a `__Secure-` (not `__Host-`) cookie, no session rotation on tenant switch, `trustedOrigins` not passed through, and `session.idleMinutes` ignored.
+
+To move an app:
+
+1. **Set `APP_KEY`** (`node strut key:generate`). `AUTH_SECRET` and `secret` are no longer used by the native engine.
+2. **Create the tables:** `node strut migrate` applies `create_auth_tables` (or run `node strut auth:migration` to copy it into `database/migrations`). The Better Auth tables (`"user"`, `"session"`, `"organization"`, …) are not touched; the v1 package migration now lives in `migrations-better-auth/`.
+3. **Move the accounts.** Password hashes are not carried over automatically (no `LegacyVerifier` for Better Auth's scrypt format ships), so every user sets a new password through `forgot-password`. Create the accounts with `openIdentityAdmin().ensureUser` or `auth:user:create`, and teams with `ensureTenant` / `setMember`.
+4. **Roles:** a tenant's creator is now `admin` (was `owner`). Rename `owner` to `admin` in your role map and policies, or keep both.
+5. **Codes:** identity error codes are lowercase (`invalid_credentials`, `validation_failed`, …), and two are new: `two_factor_required` and `email_not_verified`.
+6. **Cookies:** the session cookie is `strutvane_session` (`__Host-strutvane_session` on https). Everyone signs in again once.
+7. **Features:** switch sign-in options on in `config/auth.ts` `features`. Public `registration` stays off unless it is `true`.
+8. **Keeping Better Auth for now:** set `identity: 'better-auth'` (with `session.driver: 'database'`, PostgreSQL, `secret`). The deprecation notice reminds you.
 
 ## Security notes
+
 
 - **Deny by default, deny wins, fail closed.** No matching rule denies. A record missing a field the policy needs throws instead of guessing. Without a record, record-dependent actions are denied (`record-required:<rule>`).
 - **NULL-safe, two-valued semantics (ADR-0008).** `ne` matches rows with no value, so `deny … when status ne 'draft'` also protects rows without a status. A null actor attribute never matches null rows, and in allow rules it never widens access either: under `ne`, `nin` or `not` the condition part binds to "no match".
@@ -228,45 +247,41 @@ through core (container token + hooks), never by importing the framework:
 - **No value ever reaches SQL text.** Values are typed parameters, identifiers come only from the schema and are pattern-checked, and text search never uses `LIKE`.
 - **Untrusted filters are bounded**: node count, depth, list length and string length are capped before any work is done.
 - **Rate limits can't be bypassed with a forged `X-Forwarded-For`.** The client IP comes from the socket peer and only trusted proxies are believed. Sign-in is limited per IP (IPv6 per `/64`) and per account. Requests without a known IP share one fallback bucket instead of skipping the limit. The in-memory store evicts expired windows first and never evicts per-account counters before per-IP ones.
-- **Sessions:** a new session on every sign-in (no fixation), token rotation when privileges change (tenant creation and switch), server-side revocation, all sessions and outstanding reset links revoked on password reset, constant-time reset start (no user enumeration), `HttpOnly; SameSite=Lax` cookies that are `Secure` on https.
+- **Sessions:** the cookie holds a random id and the database holds only its keyed digest. A new session on every sign-in (no fixation) and on every privilege change (team creation and switch). Idle (2 h) and absolute (12 h) timeouts, and server-side revocation. A password reset revokes every session, token and outstanding link. Reset and email-link requests answer the same for unknown accounts. On https, cookies are `__Host-`, `Secure`, `HttpOnly` and `SameSite=Lax`.
 - **Audit records redact** passwords, tokens and secrets (plus any fields you name), keeping only the fact that they changed.
 - Attack-style tests (IDOR, role tampering, cross-tenant CRUD, header spoofing, SQL injection, session fixation, hostile filters) run on every CI build. See [`test/vapt.test.ts`](test/vapt.test.ts) and [`test/security-regressions.test.ts`](test/security-regressions.test.ts).
 
 ## Not built yet
 
-These parts of the [package spec](https://github.com/vishwajit-vm/strutvane/blob/main/docs/07-package-auth.md) come in later phases:
+- Screens (login, 2FA challenge, settings) and the `add auth` installer. Also: email change, and the `tokens:prune` and `auth:clear-resets` commands.
+- Hashing and signing through the framework's `Hash` and keyring, and `APP_PREVIOUS_KEYS` (key rotation without signing everyone out). The framework doesn't provide these yet, so the engine uses its own scrypt hasher and HKDF key ring behind the same ports.
+- A forced password change for generated admin passwords (CONSISTENCY #29), and impersonation by the `impersonate` ability instead of the `admin` role (#70).
+- The ORM-backed store and a MySQL store (both wait for the framework ORM).
+- OIDC/SAML SSO, SCIM and social login (the `sso` and `social-login` add-ons).
+- Schema-per-tenant and database-per-tenant strategies (only `shared` + RLS is implemented).
 
-- A persistent identity engine in the app provider (it uses the in-memory native engine), password-reset endpoints, screens and the `sv add auth` installer; CLI commands (`sv auth:*`, `sv tenant:*`, `sv audit:*`).
-- OIDC/SAML SSO, SCIM, MFA (TOTP, passkeys), magic links, social login, API keys and service-account tokens, JWT refresh rotation.
-- Schema-per-tenant and database-per-tenant strategies (only `shared` + RLS is implemented); custom DB-stored roles, teams and record-scoped assignments.
-- A Postgres audit sink with a transactional outbox and hash chain (the `AuditSink` interface and an in-memory sink exist).
-- Express-specific, Fastify and NestJS adapters (Express already works with the connect-style `@strutvane/auth/node` middleware).
-- Generating RBAC/ABAC policies as Postgres permissive RLS policies (today: `filterFor` + `compileToSql` in the query, plus the tenant RLS boundary).
-
-## Installation (once released)
+## Installation
 
 ```bash
-npm i @strutvane/auth
-# optional, per feature: better-auth pg hono
+npm install @strutvane/auth @strutvane/framework
+# optional: pg (PostgreSQL), hono (the Hono middleware)
 ```
 
 ## Development
 
 ```bash
-corepack pnpm@12.18.0 install
-corepack pnpm@12.18.0 run ci                # lint → typecheck → unit, property, PGlite and type tests + coverage → build
-corepack pnpm@12.18.0 run test:integration  # real PostgreSQL 18 in a throwaway Docker container
+npm install
+npm run ci                 # lint, typecheck, unit/property/PGlite/type tests with coverage, build
+npm run test:integration   # real PostgreSQL 18 in a throwaway Docker container
 ```
 
 | Script | What it does |
 |---|---|
 | `lint` / `format` | Biome check / auto-fix |
 | `typecheck` | `tsc --noEmit` with the strictest settings |
-| `test` / `test:coverage` | Vitest: unit, fast-check property tests, Postgres-equivalence and RLS tests on [PGlite](https://pglite.dev) (in-process Postgres), the identity contract on the native engine, VAPT tests and type-level tests. Coverage thresholds: 90/90/85/90. |
-| `test:integration` | Starts `postgres:18.7-alpine` with `docker run --rm` (removed afterwards, no Docker files written) and runs pooling/leak/bypass tests and the Better Auth contract + tripwires. |
+| `test` / `test:coverage` | Vitest: the engine's behaviour and attack suites on the memory, SQLite and PostgreSQL ([PGlite](https://pglite.dev)) stores, fast-check property tests, Postgres-equivalence and RLS tests, the identity contract on the native engine, VAPT tests and type-level tests. Coverage thresholds: 90/90/85/90. |
+| `test:integration` | Starts `postgres:18.7-alpine` with `docker run --rm` (removed afterwards, no Docker files written). Runs the identity store's races on a real server, the app provider with persistent identity, pooling/leak/bypass tests, and the deprecated Better Auth adapter's contract and tripwires. |
 | `build` | tsdown → one `dist/<entry>.mjs` + `.d.mts` per entry point |
-
-Until `@strutvane/contracts` and `@strutvane/core` are published, local development links them from `../contracts` and `../core` through a temporary `overrides` entry in `pnpm-workspace.yaml`. That entry must not be committed (the CI `check-deps` guard rejects it).
 
 Shared configs (`tsconfig.base.json`, `biome.base.json`, `vitest.shared.ts`, CI workflows) are synced from [strutvane-tooling](https://github.com/vishwajit-vm/strutvane-tooling). Don't edit them here.
 
@@ -274,20 +289,16 @@ Shared configs (`tsconfig.base.json`, `biome.base.json`, `vitest.shared.ts`, CI 
 
 | Package | Role |
 |---------|------|
-| [`@strutvane/framework`](https://github.com/vishwajit-vm/strutvane-framework) | Backend & database core |
+| [`@strutvane/framework`](https://github.com/vishwajit-vm/strutvane-framework) | Backend & database core, kernel, contracts, CLI and devkit |
 | [`@strutvane/auth`](https://github.com/vishwajit-vm/strutvane-auth) | Authentication, authorization, tenancy, audit (this repo) |
 | [`@strutvane/ui`](https://github.com/vishwajit-vm/strutvane-ui) | Metadata-driven frontend |
-| [`@strutvane/core`](https://github.com/vishwajit-vm/strutvane-core) | Kernel: container, providers, config, context |
-| [`@strutvane/contracts`](https://github.com/vishwajit-vm/strutvane-contracts) | Shared types and wire protocols |
-| [`strutvane` / `@strutvane/cli`](https://github.com/vishwajit-vm/strutvane-cli) | Unified CLI |
-| [`@strutvane/devkit`](https://github.com/vishwajit-vm/strutvane-devkit) | SDK for installers, generators and plugins |
 | [`@strutvane/logs`](https://github.com/vishwajit-vm/strutvane-logs) | Zero-config logging + built-in log viewer (default) |
 | [`create-strutvane`](https://github.com/vishwajit-vm/create-strutvane) | Project starter |
 
 ## Documentation
 
 - **Package specification:** [07-package-auth.md](https://github.com/vishwajit-vm/strutvane/blob/main/docs/07-package-auth.md)
-- **Decisions:** [ADR-0007](https://github.com/vishwajit-vm/strutvane/blob/main/docs/adr/0007-tenancy-rls-enforcement-rules.md) (tenancy), [ADR-0008](https://github.com/vishwajit-vm/strutvane/blob/main/docs/adr/0008-policy-predicates-two-valued-semantics.md) (policy semantics), [ADR-0013](https://github.com/vishwajit-vm/strutvane/blob/main/docs/adr/0013-better-auth-hardened-adapter.md) (Better Auth)
+- **Decisions:** [ADR-0007](https://github.com/vishwajit-vm/strutvane/blob/main/docs/adr/0007-tenancy-rls-enforcement-rules.md) (tenancy), [ADR-0008](https://github.com/vishwajit-vm/strutvane/blob/main/docs/adr/0008-policy-predicates-two-valued-semantics.md) (policy semantics), [ADR-0023](https://github.com/vishwajit-vm/strutvane/blob/main/docs/adr/0023-native-identity-engine-default.md) (native identity engine)
 - **Ecosystem blueprint:** [strutvane/docs](https://github.com/vishwajit-vm/strutvane/tree/main/docs), starting with the [executive summary](https://github.com/vishwajit-vm/strutvane/blob/main/docs/00-executive-summary.md)
 
 ## Contributing

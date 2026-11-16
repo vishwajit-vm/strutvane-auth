@@ -135,3 +135,39 @@ describe('README: the role map', () => {
     })
   })
 })
+
+describe('README: the native identity engine', () => {
+  it('works as documented (PostgreSQL store, the shipped migration, the full engine)', async () => {
+    const { createNativeEngine } = await import('../src/index.ts')
+    const { POSTGRES_AUTH_STATEMENTS, pgliteClient, postgresAuthStore, postgresCounterStore } =
+      await import('../src/postgres/index.ts')
+    const pg = await PGlite.create()
+    try {
+      for (const statement of POSTGRES_AUTH_STATEMENTS) await pg.query(statement)
+      const db = pgliteClient(pg)
+      const mails: string[] = []
+      const engine = createNativeEngine({
+        baseURL: 'https://app.example.com',
+        appKey: `base64:${Buffer.alloc(32, 1).toString('base64')}`,
+        store: postgresAuthStore(db),
+        counters: postgresCounterStore(db),
+        config: { features: { twoFactor: true, emailVerification: true } },
+        mailer: { send: async (mail) => void mails.push(mail.kind) },
+        scryptCost: 2 ** 14,
+      })
+      expect(engine.auth.config.features).toMatchObject({
+        twoFactor: true,
+        emailVerification: true,
+      })
+      const anonymous = await engine.authenticate(new Request('https://app.example.com/'))
+      expect(anonymous.actor).toBeNull()
+      expect(engine.auth.cookieNames.session).toBe('__Host-strutvane_session')
+      // A persistent store without APP_KEY is refused at boot.
+      expect(() =>
+        createNativeEngine({ baseURL: 'https://app.example.com', store: postgresAuthStore(db) }),
+      ).toThrow(/appKey/)
+    } finally {
+      await pg.close()
+    }
+  })
+})
