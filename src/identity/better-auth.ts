@@ -41,11 +41,15 @@ import type { Pool } from 'pg'
 import { resolveClientIp, trustedProxies } from '../http/client-ip.ts'
 import { isUuid } from '../policy/schema.ts'
 import {
+  type ActorAttributes,
   type Authentication,
+  DEFAULT_RATE_LIMITS,
   type ErrorReporter,
   fail,
+  type GlobalRoles,
   type IdentityEngine,
   type IdentityErrorCode,
+  type IdentityRateLimits,
   type IdentityResult,
   type IdentityUser,
   ok,
@@ -55,13 +59,31 @@ import {
   type TenantMembership,
 } from './engine.ts'
 import { createIdentityLimiter } from './limiter.ts'
-import {
-  type ActorAttributes,
-  DEFAULT_RATE_LIMITS,
-  type GlobalRoles,
-  type IdentityRateLimits,
-} from './native.ts'
 import { assertRule, normalizeEmail, type RateLimitStore } from './rate-limit.ts'
+
+/** The one-line notice every use of this adapter gets (ADR-0023 §2). */
+export const BETTER_AUTH_DEPRECATION: string =
+  '@strutvane/auth/better-auth is deprecated (ADR-0023) and will be removed no earlier than 0.3: move to the native engine (README, "Migrating from v1"). Still open on this adapter: raw session and reset tokens in the database, a __Secure- (not __Host-) cookie, no session rotation on tenant switch, trustedOrigins not passed, session.idleMinutes ignored.'
+
+let warned = false
+
+/**
+ * Say once per process that the adapter is deprecated: as a Node `DeprecationWarning` (so
+ * `--no-deprecation` and `--throw-deprecation` work) and through the app logger when there is one.
+ */
+function warnDeprecated(logger: Pick<Logger, 'warn'> | undefined): void {
+  if (warned) return
+  warned = true
+  process.emitWarning(BETTER_AUTH_DEPRECATION, {
+    type: 'DeprecationWarning',
+    code: 'STRUTVANE_AUTH_BETTER_AUTH',
+  })
+  try {
+    logger?.warn(BETTER_AUTH_DEPRECATION)
+  } catch {
+    // A broken logger must not stop the adapter.
+  }
+}
 
 /** Options for {@link createBetterAuthEngine}. */
 export interface BetterAuthEngineOptions {
@@ -132,31 +154,31 @@ const SLUG = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/
 
 /** Better Auth codes → Strutvane codes. Unknown codes fall back to the HTTP status. */
 const CODE_MAP: Readonly<Record<string, IdentityErrorCode>> = {
-  INVALID_EMAIL_OR_PASSWORD: 'INVALID_CREDENTIALS',
-  INVALID_PASSWORD: 'INVALID_CREDENTIALS',
-  USER_ALREADY_EXISTS: 'EMAIL_UNAVAILABLE',
-  USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL: 'EMAIL_UNAVAILABLE',
-  PASSWORD_TOO_SHORT: 'VALIDATION_FAILED',
-  PASSWORD_TOO_LONG: 'VALIDATION_FAILED',
-  INVALID_EMAIL: 'VALIDATION_FAILED',
-  VALIDATION_ERROR: 'VALIDATION_FAILED',
-  MISSING_FIELD: 'VALIDATION_FAILED',
-  INVALID_TOKEN: 'INVALID_TOKEN',
-  TOKEN_EXPIRED: 'INVALID_TOKEN',
-  ORGANIZATION_ALREADY_EXISTS: 'VALIDATION_FAILED',
-  ORGANIZATION_SLUG_ALREADY_TAKEN: 'VALIDATION_FAILED',
+  INVALID_EMAIL_OR_PASSWORD: 'invalid_credentials',
+  INVALID_PASSWORD: 'invalid_credentials',
+  USER_ALREADY_EXISTS: 'email_unavailable',
+  USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL: 'email_unavailable',
+  PASSWORD_TOO_SHORT: 'validation_failed',
+  PASSWORD_TOO_LONG: 'validation_failed',
+  INVALID_EMAIL: 'validation_failed',
+  VALIDATION_ERROR: 'validation_failed',
+  MISSING_FIELD: 'validation_failed',
+  invalid_token: 'invalid_token',
+  TOKEN_EXPIRED: 'invalid_token',
+  ORGANIZATION_ALREADY_EXISTS: 'validation_failed',
+  ORGANIZATION_SLUG_ALREADY_TAKEN: 'validation_failed',
   // "Not a member" and "does not exist" must look identical.
-  YOU_ARE_NOT_A_MEMBER_OF_THIS_ORGANIZATION: 'FORBIDDEN',
-  ORGANIZATION_NOT_FOUND: 'FORBIDDEN',
-  USER_IS_NOT_A_MEMBER_OF_THE_ORGANIZATION: 'FORBIDDEN',
+  YOU_ARE_NOT_A_MEMBER_OF_THIS_ORGANIZATION: 'forbidden',
+  ORGANIZATION_NOT_FOUND: 'forbidden',
+  USER_IS_NOT_A_MEMBER_OF_THE_ORGANIZATION: 'forbidden',
 }
 
 function codeFromStatus(status: number): IdentityErrorCode {
-  if (status === 401) return 'UNAUTHENTICATED'
-  if (status === 403) return 'FORBIDDEN'
-  if (status === 429) return 'RATE_LIMITED'
-  if (status >= 400 && status < 500) return 'VALIDATION_FAILED'
-  return 'INTERNAL_ERROR'
+  if (status === 401) return 'unauthenticated'
+  if (status === 403) return 'forbidden'
+  if (status === 429) return 'rate_limited'
+  if (status >= 400 && status < 500) return 'validation_failed'
+  return 'internal_error'
 }
 
 function build(options: BetterAuthEngineOptions, report: ErrorReporter) {
@@ -235,6 +257,7 @@ export function presentedToken(request: Request): string | undefined {
 
 /** Create the hardened Better Auth identity engine. */
 export function createBetterAuthEngine(options: BetterAuthEngineOptions): BetterAuthEngine {
+  warnDeprecated(options.logger)
   if (typeof options.secret !== 'string' || options.secret.length < 32) {
     throw new TypeError(
       'Better Auth secret must be at least 32 characters (use a random value from your secret store)',
@@ -304,7 +327,7 @@ export function createBetterAuthEngine(options: BetterAuthEngineOptions): Better
     // Own keys only: a body code such as "constructor" or "__proto__" must not reach the prototype.
     const mapped = Object.hasOwn(CODE_MAP, engineCode) ? CODE_MAP[engineCode] : undefined
     const code = mapped ?? codeFromStatus(res.status)
-    if (code === 'INTERNAL_ERROR')
+    if (code === 'internal_error')
       report(`better-auth ${res.status} ${engineCode}`, new Error(`HTTP ${res.status}`))
     return fail(code, res.headers)
   }
@@ -317,7 +340,7 @@ export function createBetterAuthEngine(options: BetterAuthEngineOptions): Better
       return await run()
     } catch (error) {
       report(context, error)
-      return fail('INTERNAL_ERROR')
+      return fail('internal_error')
     }
   }
 
@@ -423,7 +446,7 @@ export function createBetterAuthEngine(options: BetterAuthEngineOptions): Better
   ): Promise<IdentityResult<{ readonly actor: Actor }>> => {
     if (res.status !== 200) return toFailure(res)
     const current = await session(withCookies(request, res.headers))
-    if (!current) return fail('INTERNAL_ERROR')
+    if (!current) return fail('internal_error')
     return ok({ actor: await actorFrom(current.user, current.activeTenantId) }, res.headers)
   }
 
@@ -444,7 +467,7 @@ export function createBetterAuthEngine(options: BetterAuthEngineOptions): Better
     signUp: (input, request) =>
       guarded('signUp', async () => {
         const retry = await limited(request, 'signup', limits.signUpPerIp)
-        if (retry !== undefined) return fail('RATE_LIMITED', new Headers(), retry)
+        if (retry !== undefined) return fail('rate_limited', new Headers(), retry)
         if (
           typeof input.email !== 'string' ||
           !EMAIL.test(input.email) ||
@@ -454,7 +477,7 @@ export function createBetterAuthEngine(options: BetterAuthEngineOptions): Better
           input.name.length === 0 ||
           input.name.length > MAX_NAME
         ) {
-          return fail('VALIDATION_FAILED')
+          return fail('validation_failed')
         }
         return signedIn(
           request,
@@ -476,9 +499,9 @@ export function createBetterAuthEngine(options: BetterAuthEngineOptions): Better
           email,
           limits.signInPerAccount,
         )
-        if (retry !== undefined) return fail('RATE_LIMITED', new Headers(), retry)
+        if (retry !== undefined) return fail('rate_limited', new Headers(), retry)
         if (!EMAIL.test(email) || typeof input.password !== 'string')
-          return fail('INVALID_CREDENTIALS')
+          return fail('invalid_credentials')
         const result = await signedIn(
           request,
           await call('POST', '/sign-in/email', request, { email, password: input.password }),
@@ -498,7 +521,7 @@ export function createBetterAuthEngine(options: BetterAuthEngineOptions): Better
 
     signOut: (request) =>
       guarded('signOut', async () => {
-        if (!(await session(request))) return fail('UNAUTHENTICATED')
+        if (!(await session(request))) return fail('unauthenticated')
         const res = await call('POST', '/sign-out', request)
         if (res.status !== 200) return toFailure(res)
         return ok(null, res.headers)
@@ -507,7 +530,7 @@ export function createBetterAuthEngine(options: BetterAuthEngineOptions): Better
     startPasswordReset: (input, request) =>
       guarded('startPasswordReset', async () => {
         if (typeof input.email !== 'string' || !EMAIL.test(input.email))
-          return fail('VALIDATION_FAILED')
+          return fail('validation_failed')
         const retry = await limited(
           request,
           'reset',
@@ -515,7 +538,7 @@ export function createBetterAuthEngine(options: BetterAuthEngineOptions): Better
           input.email,
           limits.passwordReset,
         )
-        if (retry !== undefined) return fail('RATE_LIMITED', new Headers(), retry)
+        if (retry !== undefined) return fail('rate_limited', new Headers(), retry)
         const res = await call('POST', '/request-password-reset', request, { email: input.email })
         // Better Auth answers 200 for unknown emails too; only real failures surface.
         if (res.status !== 200) return toFailure(res)
@@ -525,7 +548,7 @@ export function createBetterAuthEngine(options: BetterAuthEngineOptions): Better
     completePasswordReset: (input, request) =>
       guarded('completePasswordReset', async () => {
         if (typeof input.token !== 'string' || input.token.length > 200)
-          return fail('INVALID_TOKEN')
+          return fail('invalid_token')
         // Better Auth consumes only the token used; every other reset link already mailed to the
         // user stays valid. Read the owner first (the row is gone once the reset succeeds), so the
         // siblings can be deleted afterwards, as the native engine does.
@@ -552,16 +575,16 @@ export function createBetterAuthEngine(options: BetterAuthEngineOptions): Better
 
     createTenant: (input, request) =>
       guarded('createTenant', async () => {
-        if (!(await session(request))) return fail('UNAUTHENTICATED')
+        if (!(await session(request))) return fail('unauthenticated')
         if (typeof input.name !== 'string' || typeof input.slug !== 'string')
-          return fail('VALIDATION_FAILED')
+          return fail('validation_failed')
         const res = await call('POST', '/organization/create', request, {
           name: input.name,
           slug: input.slug,
         })
         if (res.status !== 200) return toFailure(res)
         const org = res.body as { id: string; name: string; slug: string }
-        if (!isUuid(org.id)) return fail('INTERNAL_ERROR')
+        if (!isUuid(org.id)) return fail('internal_error')
         return ok<TenantMembership>(
           { tenantId: org.id, name: org.name, slug: org.slug, roles: ['owner'] },
           res.headers,
@@ -571,7 +594,7 @@ export function createBetterAuthEngine(options: BetterAuthEngineOptions): Better
     listTenants: (request) =>
       guarded('listTenants', async () => {
         const current = await session(request)
-        if (!current) return fail('UNAUTHENTICATED')
+        if (!current) return fail('unauthenticated')
         const res = await call('GET', '/organization/list', request)
         if (res.status !== 200) return toFailure(res)
         const orgs = (Array.isArray(res.body) ? res.body : []) as {
@@ -590,24 +613,24 @@ export function createBetterAuthEngine(options: BetterAuthEngineOptions): Better
     switchTenant: (input, request) =>
       guarded('switchTenant', async () => {
         const current = await session(request)
-        if (!current) return fail('UNAUTHENTICATED')
-        if (typeof input.tenantId !== 'string' || !isUuid(input.tenantId)) return fail('FORBIDDEN') // same as "unknown"
+        if (!current) return fail('unauthenticated')
+        if (typeof input.tenantId !== 'string' || !isUuid(input.tenantId)) return fail('forbidden') // same as "unknown"
         // Check membership BEFORE asking Better Auth: a refused set-active can still leave the
         // requested organization in the session, which silently dropped the caller's current
         // tenant (actorFrom then saw a stale tenant and fell back to none).
-        if (!(await rolesIn(current.user.id, input.tenantId))) return fail('FORBIDDEN')
+        if (!(await rolesIn(current.user.id, input.tenantId))) return fail('forbidden')
         const res = await call('POST', '/organization/set-active', request, {
           organizationId: input.tenantId,
         })
         if (res.status !== 200) {
           // Any refusal (not a member, unknown tenant) is FORBIDDEN, so tenants cannot be probed.
           const failure = toFailure<{ actor: Actor }>(res)
-          return !failure.ok && failure.error.code === 'INTERNAL_ERROR'
+          return !failure.ok && failure.error.code === 'internal_error'
             ? failure
-            : fail('FORBIDDEN', res.headers)
+            : fail('forbidden', res.headers)
         }
         const after = await session(request)
-        if (!after) return fail('UNAUTHENTICATED')
+        if (!after) return fail('unauthenticated')
         return ok({ actor: await actorFrom(after.user, after.activeTenantId) }, res.headers)
       }),
 
@@ -619,7 +642,7 @@ export function createBetterAuthEngine(options: BetterAuthEngineOptions): Better
           typeof input.role !== 'string' ||
           !ROLE.test(input.role)
         ) {
-          return fail('VALIDATION_FAILED')
+          return fail('validation_failed')
         }
         // Written through the adapter, not `api.addMember`: Better Auth only accepts its own role
         // names there, while Strutvane roles come from config/auth.ts (viewer, accountant, …).
@@ -631,7 +654,7 @@ export function createBetterAuthEngine(options: BetterAuthEngineOptions): Better
           }),
           ctx.adapter.findOne({ model: 'user', where: [{ field: 'id', value: input.userId }] }),
         ])
-        if (!org || !user) return fail('VALIDATION_FAILED')
+        if (!org || !user) return fail('validation_failed')
         const where = [
           { field: 'userId', value: input.userId },
           { field: 'organizationId', value: input.tenantId },
@@ -654,7 +677,7 @@ export function createBetterAuthEngine(options: BetterAuthEngineOptions): Better
 
     removeMemberAsSystem: (input) =>
       guarded('removeMemberAsSystem', async () => {
-        if (!isUuid(input.tenantId) || !isUuid(input.userId)) return fail('VALIDATION_FAILED')
+        if (!isUuid(input.tenantId) || !isUuid(input.userId)) return fail('validation_failed')
         // No session-less endpoint exists; sessions keep activeOrganizationId, but actorFrom()
         // re-checks membership on every request, so the stale tenant is dropped immediately.
         const ctx = await auth.$context
@@ -694,12 +717,12 @@ export function createBetterAuthEngine(options: BetterAuthEngineOptions): Better
           input.name.length === 0 ||
           input.name.length > MAX_NAME
         ) {
-          return fail('VALIDATION_FAILED')
+          return fail('validation_failed')
         }
         const ctx = await auth.$context
         const email = normalizeEmail(input.email)
         if (await ctx.adapter.findOne({ model: 'user', where: [{ field: 'email', value: email }] }))
-          return fail('EMAIL_UNAVAILABLE')
+          return fail('email_unavailable')
         // Better Auth's own server-side sign-up (password hashing, credential account), then the
         // session it opens is deleted: a system-created account is not signed in anywhere.
         const result = (await auth.api.signUpEmail({
@@ -710,7 +733,7 @@ export function createBetterAuthEngine(options: BetterAuthEngineOptions): Better
             model: 'session',
             where: [{ field: 'token', value: result.token }],
           })
-        if (!isUuid(result.user.id)) return fail('INTERNAL_ERROR')
+        if (!isUuid(result.user.id)) return fail('internal_error')
         return ok<IdentityUser>({
           id: result.user.id,
           email: result.user.email,
@@ -728,7 +751,7 @@ export function createBetterAuthEngine(options: BetterAuthEngineOptions): Better
           typeof input.slug !== 'string' ||
           !SLUG.test(input.slug)
         )
-          return fail('VALIDATION_FAILED')
+          return fail('validation_failed')
         const ctx = await auth.$context
         if (
           await ctx.adapter.findOne({
@@ -736,11 +759,11 @@ export function createBetterAuthEngine(options: BetterAuthEngineOptions): Better
             where: [{ field: 'slug', value: input.slug }],
           })
         )
-          return fail('VALIDATION_FAILED')
+          return fail('validation_failed')
         const org = (await auth.api.createOrganization({
           body: { name: input.name, slug: input.slug, userId: input.ownerUserId },
         })) as { id: string; name: string; slug: string } | null
-        if (!org || !isUuid(org.id)) return fail('INTERNAL_ERROR')
+        if (!org || !isUuid(org.id)) return fail('internal_error')
         return ok<TenantMembership>({
           tenantId: org.id,
           name: org.name,
@@ -765,7 +788,7 @@ export function createBetterAuthEngine(options: BetterAuthEngineOptions): Better
 
     listMembersAsSystem: (input) =>
       guarded('listMembersAsSystem', async () => {
-        if (!isUuid(input.tenantId)) return fail('VALIDATION_FAILED')
+        if (!isUuid(input.tenantId)) return fail('validation_failed')
         const ctx = await auth.$context
         const rows = await ctx.adapter.findMany<{ userId: string; role: string }>({
           model: 'member',

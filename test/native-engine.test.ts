@@ -2,7 +2,7 @@
  * The native engine: the identity contract suite (shared with the Better Auth adapter, which runs
  * it in test/integration), plus native-specific behaviour.
  */
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import { createNativeEngine } from '../src/identity/native.ts'
 import {
   accountKey,
@@ -24,10 +24,20 @@ import {
 
 const FAST = 2 ** 14 // lower scrypt cost for tests (the minimum the engine accepts)
 
-runIdentityContract('native', async (options) => ({
-  engine: createNativeEngine({ ...options, scryptCost: FAST }),
-  cleanup: async () => undefined,
-}))
+/**
+ * The contract configures small limits to trip them; the engine's lockout (5 failures) is the
+ * stricter bound in an app, so it is raised here to let the contract see its rate limits. Roles:
+ * the contract adds `member` and `viewer` to tenants.
+ */
+const CONTRACT_CONFIG = {
+  lockout: { threshold: 1000 },
+  roles: 'admin-manager-member-viewer',
+} as const
+
+runIdentityContract('native', async (options) => {
+  const engine = createNativeEngine({ ...options, scryptCost: FAST, config: CONTRACT_CONFIG })
+  return { engine, ownerRole: engine.ownerRole, cleanup: async () => undefined }
+})
 
 const URL_ = 'http://localhost:3000'
 const req = (jar = newJar(), ip = freshIp()) => browserRequest(URL_, { jar, ip })
@@ -77,12 +87,13 @@ describe('native engine specifics', () => {
     const token = await mailbox.waitForToken(email)
     now += 61_000
     expect(await engine.getActor(req(jar))).toBeNull()
-    now += 30 * 60_000
+    // Reset links live 60 minutes (config links.passwordResetMinutes).
+    now += 60 * 60_000
     const late = await engine.completePasswordReset(
       { token, newPassword: 'another long password' },
       req(),
     )
-    expect(late.ok ? 'ok' : late.error.code).toBe('INVALID_TOKEN')
+    expect(late.ok ? 'ok' : late.error.code).toBe('invalid_token')
   })
 
   it('a weak new password keeps the reset token usable; the cookie is __Host- prefixed on https', async () => {
@@ -97,31 +108,30 @@ describe('native engine specifics', () => {
       { email, password: TEST_PASSWORD, name: 'W' },
       browserRequest('https://app.example.com', { ip: freshIp() }),
     )
-    expect(s.headers.getSetCookie()[0]).toMatch(/^__Host-sv_session=.*; Secure$/)
+    expect(s.headers.getSetCookie()[0]).toMatch(/^__Host-strutvane_session=.*; Secure$/)
     await engine.startPasswordReset({ email }, req())
     const token = await mailbox.waitForToken(email)
     const weak = await engine.completePasswordReset({ token, newPassword: 'short' }, req())
-    expect(weak.ok ? 'ok' : weak.error.code).toBe('VALIDATION_FAILED')
+    expect(weak.ok ? 'ok' : weak.error.code).toBe('validation_failed')
     expect(
       (await engine.completePasswordReset({ token, newPassword: 'a much longer password' }, req()))
         .ok,
     ).toBe(true)
   })
 
-  it('reports engine failures and returns INTERNAL_ERROR / anonymous instead of throwing', async () => {
+  it('reports engine failures and returns internal_error / anonymous instead of throwing', async () => {
     const reported: string[] = []
-    const failing = {
-      hit: async () => {
-        throw new Error('store down')
-      },
+    const down = async (): Promise<never> => {
+      throw new Error('store down')
     }
+    const failing = { increment: down, get: down, set: down, delete: down }
     const engine = createNativeEngine({
       baseURL: URL_,
       deliverPasswordReset: async () => {
         throw new Error('mailer down')
       },
       scryptCost: FAST,
-      rateLimitStore: failing,
+      counters: failing,
       onUnexpectedError: (context) => {
         reported.push(context)
         throw new Error('a broken reporter must not break auth')
@@ -131,15 +141,17 @@ describe('native engine specifics', () => {
       },
     })
     const r = await engine.signIn({ email: testEmail('x'), password: TEST_PASSWORD }, req())
-    expect(r.ok ? null : r.error).toEqual({ code: 'INTERNAL_ERROR', status: 500 })
+    expect(r.ok ? null : r.error).toEqual({ code: 'internal_error', status: 500 })
     expect(reported).toContain('signIn')
     expect((await engine.authenticate(req())).actor).toBeNull()
   })
 
   it('reports background delivery failures and an attribute resolver error during authenticate', async () => {
     const reported: string[] = []
+    const warnings: unknown[][] = []
     let failAttrs = false
     const engine = createNativeEngine({
+      logger: { warn: (...args: unknown[]) => void warnings.push(args) },
       baseURL: URL_,
       deliverPasswordReset: async () => {
         throw new Error('mailer down')
@@ -161,7 +173,12 @@ describe('native engine specifics', () => {
       emailVerified: false,
     })
     await engine.startPasswordReset({ email }, req())
-    await vi.waitFor(() => expect(reported).toContain('deliverPasswordReset'))
+    // Mail goes out in the background; a failing mailer is logged by mail kind only.
+    await engine.auth.idle()
+    expect(warnings).toContainEqual([
+      'auth: background task failed',
+      { task: 'mail:password-reset' },
+    ])
     failAttrs = true
     expect((await engine.authenticate(req(store(newJar(), s)))).actor).toBeNull()
     expect(reported).toContain('authenticate')
@@ -192,14 +209,14 @@ describe('native engine specifics', () => {
     expect(first.ok).toBe(true)
     store(jar, first)
     const dup = await engine.createTenant({ name: 'B', slug: 'dup' }, req(jar))
-    expect(dup.ok ? 'ok' : dup.error.code).toBe('VALIDATION_FAILED')
+    expect(dup.ok ? 'ok' : dup.error.code).toBe('validation_failed')
     const bad = await engine.createTenant({ name: 'C', slug: 'Not A Slug' }, req(jar))
-    expect(bad.ok ? 'ok' : bad.error.code).toBe('VALIDATION_FAILED')
+    expect(bad.ok ? 'ok' : bad.error.code).toBe('validation_failed')
     const list = await engine.listTenants(req(jar))
     const tenantId = list.ok ? (list.value[0]?.tenantId ?? '') : ''
     const userId = s.ok ? s.value.actor.id : ''
     const role = await engine.addMemberAsSystem({ tenantId, userId, role: 'Admin; DROP' })
-    expect(role.ok ? 'ok' : role.error.code).toBe('VALIDATION_FAILED')
+    expect(role.ok ? 'ok' : role.error.code).toBe('validation_failed')
   })
 
   it('counts both IP and account keys, keyed by a hash of the normalised email', async () => {
@@ -239,11 +256,11 @@ describe('native engine specifics', () => {
       { email: testEmail('b'), password: 'x'.repeat(12) },
       browserRequest(URL_, { ip }),
     )
-    expect(second.ok ? 'ok' : second.error.code).toBe('RATE_LIMITED')
+    expect(second.ok ? 'ok' : second.error.code).toBe('rate_limited')
     const other = await engine.signIn(
       { email: testEmail('c'), password: 'x'.repeat(12) },
       browserRequest(URL_, { ip: freshIp() }),
     )
-    expect(other.ok ? 'ok' : other.error.code).toBe('INVALID_CREDENTIALS')
+    expect(other.ok ? 'ok' : other.error.code).toBe('invalid_credentials')
   })
 })

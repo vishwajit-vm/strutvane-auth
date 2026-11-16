@@ -14,10 +14,24 @@
  * - enforces policy field rules: `resource.serialize` drops fields the actor may not read and
  *   `resource.beforeWrite` refuses writes to fields the actor may not write (see field-rules.ts).
  *
- * Identity: with `session.driver: 'database'` on PostgreSQL the provider runs Better Auth on the
- * app's database (accounts, sessions, tenants and memberships persist and are shared by every
- * process; create the tables with `sv auth:migration` + `sv migrate`). Otherwise it uses the
- * native engine (in memory, single process: development and tests). See identity/app-identity.ts.
+ * Identity: Strutvane's own engine (ADR-0023) on the app's database: PostgreSQL (on the
+ * framework's `Database` when it is bound) or SQLite, with the tables from the shipped migration
+ * (`migrate`); in memory with `session.driver: 'memory'` (development and tests). The deprecated
+ * Better Auth adapter runs only with `identity: 'better-auth'`. See identity/app-identity.ts.
+ *
+ * Besides the v1 endpoints below, the engine's own routes (Fortify's names: `POST /login`,
+ * `/register`, `/forgot-password`, `/reset-password`, `/two-factor-challenge`, `/user/…` for
+ * sessions, two-factor, passkeys and API tokens, `/teams/…`, `/impersonate/…`) are served under
+ * the same `{api}/auth` prefix, each only while its feature is on (`config/auth.ts` `features`).
+ *
+ * One source for cookie names (CONSISTENCY #105): in `register()` the provider binds
+ * `SessionCookieToken` from `config/session.ts` `cookie` and the app URL, the engine names its
+ * session cookie from the same value, and the framework's CSRF check reads the token; boot fails
+ * if anything bound a different name first.
+ *
+ * Domain events: every auth event is published on the framework event bus as `auth.*` or
+ * `tenant.*` (integration map §5; see events.ts). Mail goes to the mailer bound under
+ * `AuthMailerToken`; without one, mails are dropped with a warning (never with their links).
  * On boot it makes sure the `seedAdmin` account from `config/auth.ts` exists (created once,
  * never overwritten), so there is always a way in. The role is bound to that account's id (never
  * to the email), and boot fails if the account cannot be found or created. New sign-ups get
@@ -40,11 +54,13 @@
 import { existsSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { DatabaseToken, SessionCookieToken, sessionCookieName } from '@strutvane/framework'
 import { type Actor, HTTP_HOOKS, type HttpRequestHookPayload } from '@strutvane/framework/contracts'
 import {
   type Application,
   defineProvider,
   ErrorRegistryToken,
+  EventBusToken,
   HooksToken,
   LoggerToken,
   PermissionProviderToken,
@@ -53,8 +69,12 @@ import {
   UnauthenticatedError,
 } from '@strutvane/framework/core'
 import type { AuthConfig } from './config.ts'
+import { createAuthHandler } from './engine/http/routes.ts'
+import type { AuthMailer } from './engine/ports/mailer.ts'
 import { AUTH_ERRORS } from './errors.ts'
+import { domainEventSink } from './events.ts'
 import { registerFieldRules } from './field-rules.ts'
+import { resolveClientIp, trustedProxies } from './http/client-ip.ts'
 import { attachRequestMeta } from './http/request-meta.ts'
 import {
   type AppDatabaseSection,
@@ -62,11 +82,13 @@ import {
   createAppIdentity,
 } from './identity/app-identity.ts'
 import type { IdentityEngine, IdentityResult } from './identity/engine.ts'
+import { engineConfigFrom } from './identity/engine-config.ts'
 import { authenticateRequest, problemResponse } from './middleware/core.ts'
 import type { Policy } from './policy/policy.ts'
 import { createPermissionProvider, type StrutvanePermissionProvider } from './policy/provider.ts'
 import { compileRoleMap } from './policy/roles.ts'
 import { headerResolver, sessionResolver } from './tenancy/resolver.ts'
+import { AuthMailerToken } from './tokens.ts'
 
 /**
  * `config/auth.ts`, as the provider reads it (the full shape is {@link AuthConfig}; write it with
@@ -114,7 +136,8 @@ export async function loadPolicies(root: string): Promise<Policy[]> {
 const tooLarge = () => new StrutvaneError('PAYLOAD_TOO_LARGE', { status: 413 })
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const MEMBERS = /^\/tenants\/([^/]+)\/members(?:\/([^/]+))?$/
-const DEFAULT_TENANT_ROLES = ['owner', 'member', 'viewer'] as const
+/** v1 tenant roles of the deprecated Better Auth adapter (its creator role is `owner`). */
+const BETTER_AUTH_TENANT_ROLES = ['owner', 'member', 'viewer'] as const
 /** Routes that exist only with tenancy on (`config/tenancy.ts` `enabled: true`). */
 const TENANT_ROUTES: ReadonlySet<string> = new Set([
   'POST /tenants',
@@ -240,7 +263,12 @@ async function handleMembers(
   request: Request,
   tenantId: string,
   userId: string | undefined,
-  deps: { readonly engine: IdentityEngine; readonly roles: readonly string[] },
+  deps: {
+    readonly engine: IdentityEngine
+    readonly roles: readonly string[]
+    /** The role that manages a tenant: `admin` (native) or `owner` (Better Auth). */
+    readonly ownerRole: string
+  },
 ): Promise<Response> {
   const auth = await deps.engine.authenticate(request)
   const actor = auth.actor
@@ -250,7 +278,7 @@ async function handleMembers(
   if (
     !UUID.test(tenantId) ||
     actor.tenantId?.toLowerCase() !== tenantId.toLowerCase() ||
-    !actor.roles.includes('owner')
+    !actor.roles.includes(deps.ownerRole)
   )
     return forbidden()
   const fromResult = <T>(r: IdentityResult<T>): T | Response =>
@@ -269,9 +297,9 @@ async function handleMembers(
     // An unknown email is the same 422 as a bad role (invitations are a separate, planned flow).
     if (!found) return invalid()
     const isLastOwner =
-      role !== 'owner' &&
-      roster.filter((m) => m.roles.includes('owner')).every((m) => m.userId === found.id) &&
-      roster.some((m) => m.userId === found.id && m.roles.includes('owner'))
+      role !== deps.ownerRole &&
+      roster.filter((m) => m.roles.includes(deps.ownerRole)).every((m) => m.userId === found.id) &&
+      roster.some((m) => m.userId === found.id && m.roles.includes(deps.ownerRole))
     if (isLastOwner) return invalid()
     const added = await deps.engine.addMemberAsSystem({ tenantId, userId: found.id, role })
     if (!added.ok) return toResponse({ ...added, ok: false })
@@ -284,8 +312,8 @@ async function handleMembers(
   if (method === 'DELETE' && userId !== undefined) {
     const target = roster.find((m) => m.userId.toLowerCase() === userId.toLowerCase())
     if (!target) return problemResponse(new StrutvaneError('NOT_FOUND', { status: 404 }))
-    const owners = roster.filter((m) => m.roles.includes('owner'))
-    if (target.roles.includes('owner') && owners.length <= 1) return invalid()
+    const owners = roster.filter((m) => m.roles.includes(deps.ownerRole))
+    if (target.roles.includes(deps.ownerRole) && owners.length <= 1) return invalid()
     const removed = await deps.engine.removeMemberAsSystem({ tenantId, userId: target.userId })
     if (!removed.ok) return toResponse({ ...removed, ok: false })
     return new Response(null, { status: 204, headers: auth.headers })
@@ -300,6 +328,20 @@ export function createAuthProvider(): Provider {
   return defineProvider({
     name: '@strutvane/auth',
     register(app) {
+      // One source for the session cookie's name (#105): bound here, before the framework builds
+      // its HTTP app, so its CSRF check reads exactly the name the engine sets. A binding that
+      // already exists is checked against the engine's name at boot.
+      if (!app.container.has(SessionCookieToken)) {
+        const appUrl = section<{ url?: string }>(app, 'app')?.url ?? 'http://localhost:3000'
+        const base = section<{ cookie?: string }>(app, 'session')?.cookie
+        app.container.value(
+          SessionCookieToken,
+          sessionCookieName({
+            ...(base !== undefined ? { base } : {}),
+            secure: new URL(appUrl).protocol === 'https:',
+          }),
+        )
+      }
       app.container.singleton(PermissionProviderToken, () => {
         if (!permissions)
           throw new Error(
@@ -334,23 +376,55 @@ export function createAuthProvider(): Provider {
       const defaultRoles = [...(cfg.defaultRoles ?? [])]
       // The admin role belongs to the seeded ACCOUNT (by id), never to whoever registers the email.
       let seedUserId: string | undefined
+      const cookie = app.make(SessionCookieToken)
+      const tenancyOn = tenancy?.enabled === true
+      const mailer: AuthMailer = app.container.has(AuthMailerToken)
+        ? app.make(AuthMailerToken)
+        : {
+            // Never log the mail itself: it carries a secret link.
+            send: async (mail) =>
+              logger.warn(
+                'auth: a mail was not sent because no mailer is bound (AuthMailerToken)',
+                {
+                  kind: mail.kind,
+                },
+              ),
+          }
       const trustedOrigins = new Set<string>()
       for (const o of [appUrl, ...(cfg.trustedOrigins ?? [])]) {
         const origin = originOf(o)
         if (origin === undefined) throw new TypeError(`Invalid trusted origin ${JSON.stringify(o)}`)
         trustedOrigins.add(origin)
       }
+      const betterAuth = cfg.identity === 'better-auth'
       identity = await createAppIdentity({
         auth: cfg,
         appUrl,
+        root,
         database: section<AppDatabaseSection>(app, 'database'),
+        frameworkDatabase: app.container.has(DatabaseToken) ? app.make(DatabaseToken) : undefined,
+        appKey: section<{ key?: string }>(app, 'app')?.key || process.env['APP_KEY'],
         logger,
-        deliverPasswordReset: async () => {
-          logger.warn('Password reset requested, but no mailer is configured for @strutvane/auth')
-        },
-        globalRoles: ({ userId }) =>
-          seedUserId !== undefined && userId === seedUserId ? [seedRole] : defaultRoles,
+        engineConfig: engineConfigFrom(cfg, { tenancy: tenancyOn, sessionCookie: cookie.base }),
+        mailer,
+        events: domainEventSink(app.make(EventBusToken), logger),
+        defaultRoles,
+        deliverPasswordReset: async () => undefined,
+        // The deprecated adapter has no stored global roles: v1's rule, bound to the account id.
+        ...(betterAuth
+          ? {
+              globalRoles: ({ userId }: { readonly userId: string }) =>
+                seedUserId !== undefined && userId === seedUserId ? [seedRole] : defaultRoles,
+            }
+          : {}),
       })
+      // #105: the engine and the framework's CSRF check must agree on the session cookie name.
+      if (identity.native && identity.native.auth.cookieNames.session !== cookie.name) {
+        await identity.close()
+        throw new Error(
+          `@strutvane/auth: the session cookie is "${identity.native.auth.cookieNames.session}" but SessionCookieToken says "${cookie.name}"; bind SessionCookieToken from config/session.ts only`,
+        )
+      }
       const native = identity.engine
       if (seedEmail && cfg.seedAdmin?.password) {
         // Idempotent: a persistent store already holds the account after the first boot. An
@@ -374,11 +448,51 @@ export function createAuthProvider(): Provider {
           )
         }
         seedUserId = seeded.value.id
+        // Native engine: the role is stored with the account (user_roles), once; an operator may
+        // change it afterwards. A role the engine does not know fails the boot (fail closed).
+        const engineAuth = identity.native?.auth
+        if (engineAuth) {
+          const held = await engineAuth.system.rolesOf(seeded.value.id)
+          if (!held.includes(seedRole))
+            await engineAuth.system
+              .setRoles(seeded.value.id, [...held, seedRole])
+              .catch(async () => {
+                await identity?.close()
+                throw new Error(
+                  `@strutvane/auth: seedAdmin.role "${seedRole}" is not a role of this app (config/auth.ts roles)`,
+                )
+              })
+        }
       } else if (seedEmail) {
         logger.warn('seedAdmin.email is set without a password; no seed admin was created')
       }
 
       const base = `${apiBase(section(app, 'api'))}/auth`
+      const proxies = trustedProxies(cfg.trustedProxies)
+      const engineHandler = identity.native
+        ? createAuthHandler(identity.native.auth, {
+            onError: (route, error) =>
+              logger.error('auth route failure', {
+                route,
+                error: error instanceof Error ? error.message : String(error),
+              }),
+          })
+        : undefined
+      /** Serve one engine route: the body is read with the 16 KiB streaming cap first. */
+      const engineRoutes = engineHandler
+        ? async (request: Request, path: string): Promise<Response> => {
+            const url = new URL(request.url)
+            url.pathname = path
+            const hasBody = request.method !== 'GET' && request.method !== 'HEAD'
+            const body = hasBody ? await readBody(request) : undefined
+            const inner = new Request(url, {
+              method: request.method,
+              headers: request.headers,
+              ...(body !== undefined && body !== '' ? { body } : {}),
+            })
+            return engineHandler(inner, { ip: resolveClientIp(request, proxies) })
+          }
+        : undefined
       const tenancyOptions =
         tenancy?.enabled === true
           ? {
@@ -420,7 +534,12 @@ export function createAuthProvider(): Provider {
                 return answer(
                   await handleMembers(p.request, members[1] ?? '', members[2], {
                     engine: native,
-                    roles: cfg.roles ? Object.keys(cfg.roles) : DEFAULT_TENANT_ROLES,
+                    roles: identity?.native
+                      ? identity.native.auth.config.roles
+                      : cfg.roles
+                        ? Object.keys(cfg.roles)
+                        : BETTER_AUTH_TENANT_ROLES,
+                    ownerRole: identity?.native ? identity.native.ownerRole : 'owner',
                   }),
                 )
               // Without tenancy the tenant endpoints do not exist: otherwise any signed-in user
@@ -430,7 +549,7 @@ export function createAuthProvider(): Provider {
               switch (route) {
                 case 'POST /sign-up': {
                   // Deny by default: only an explicit `registration: true` opens public sign-up.
-                  if (cfg.registration !== true)
+                  if (cfg.registration !== true && cfg.features?.registration !== true)
                     return answer(problemResponse(new StrutvaneError('FORBIDDEN', { status: 403 })))
                   const body = await readJson(p.request)
                   const input = {
@@ -480,6 +599,10 @@ export function createAuthProvider(): Provider {
                   return answer(json({ actor: publicActor(auth.actor) }, 200, auth.headers))
                 }
                 default:
+                  // The engine's own routes (Fortify's names), each only while its feature is on;
+                  // anything else is the engine's plain 404.
+                  if (engineRoutes)
+                    return answer(await engineRoutes(p.request, url.pathname.slice(base.length)))
                   return answer(problemResponse(new StrutvaneError('NOT_FOUND', { status: 404 })))
               }
             } catch (error) {

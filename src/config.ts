@@ -28,6 +28,7 @@
  * @module
  */
 import { type DeepReadonly, defineConfig } from '@strutvane/framework/core'
+import type { AuthConfigInput, AuthFeaturesInput, RolePreset } from './engine/config.ts'
 import type { NewModelDefaults, RoleDefinition } from './policy/roles.ts'
 
 /** Client credentials of one social sign-in provider (values usually come from the env). */
@@ -40,6 +41,42 @@ export type SocialProviderConfig = Readonly<Record<string, string | undefined>>
  * are declared for the identity engines and installers that read them.
  */
 export interface AuthConfig {
+  /**
+   * The identity engine. `native` (the default, ADR-0023) is Strutvane's own engine. `better-auth`
+   * is the v1 adapter, **deprecated**: it logs a warning and is removed no earlier than 0.3.
+   */
+  readonly identity?: 'native' | 'better-auth'
+  /**
+   * The sign-in features (installer questions 5-12, names from CONSISTENCY #25 and #107):
+   * `password`, `registration`, `emailVerification`, `passwordReset` (follows `password`),
+   * `passwordConfirmation`, `twoFactor`, `passkeys`, `emailLink`, `apiTokens`, `teams`,
+   * `impersonation`. Everything optional is off unless set here. `registration` here and the
+   * top-level `registration` both open public sign-up; either one `true` is enough.
+   */
+  readonly features?: AuthFeaturesInput
+  /** Password length bounds (default 12–256, NIST: no composition rules). */
+  readonly passwords?: AuthConfigInput['passwords']
+  /** Session timeouts: idle, absolute, remember me, password confirmation, pending 2FA. */
+  readonly sessions?: AuthConfigInput['sessions']
+  /** How long reset, email-link, verification and invitation links live. */
+  readonly links?: AuthConfigInput['links']
+  /** Recovery codes, remembered devices and the authenticator issuer. */
+  readonly twoFactor?: AuthConfigInput['twoFactor']
+  /** Personal access tokens: allowed abilities, expiry, prefix. */
+  readonly tokens?: AuthConfigInput['tokens']
+  /** WebAuthn relying party (`rpId`, `rpName`, `origins`); required with `features.passkeys`. */
+  readonly passkeys?: AuthConfigInput['passkeys']
+  /** Rate limits (sliding windows) for each flow. */
+  readonly limits?: AuthConfigInput['limits']
+  /** Lockout after repeated failures (threshold, base and maximum seconds). */
+  readonly lockout?: AuthConfigInput['lockout']
+  /** Team options (`personal`: give every user a personal team; default off for tenancy apps). */
+  readonly teams?: AuthConfigInput['teams']
+  /**
+   * The starting roles when there is no role map (installer question 10):
+   * `admin-member` (default) or `admin-manager-member-viewer`.
+   */
+  readonly rolePreset?: RolePreset
   /** Sign-in methods offered (e.g. `['email', 'google']`). */
   readonly methods?: readonly string[]
   /** The signing secret (from `AUTH_SECRET`; never hard-code it). */
@@ -55,7 +92,6 @@ export interface AuthConfig {
     /** Idle timeout in minutes. */
     readonly idleMinutes?: number | undefined
   }
-  readonly tokens?: { readonly accessTokenSeconds?: number | undefined }
   /** MFA policy (`off | optional | admins | required`). */
   readonly mfa?: string | undefined
   /** Social sign-in providers by name. */

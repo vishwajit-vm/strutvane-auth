@@ -146,7 +146,11 @@ export function createAuth(ports: AuthPorts): Auth {
     Object.fromEntries(
       Object.keys(COOKIE_NAMES).map((kind) => [
         kind,
-        resolveCookieName(ports.config.secureCookies, kind as CookieKind),
+        resolveCookieName(
+          ports.config.secureCookies,
+          kind as CookieKind,
+          ports.config.sessionCookie,
+        ),
       ]),
     ) as Record<CookieKind, string>,
   )

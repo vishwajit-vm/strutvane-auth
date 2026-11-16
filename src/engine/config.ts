@@ -83,6 +83,12 @@ export interface PasskeyConfig {
 export interface AuthConfigInput {
   /** The public base URL; links are built on it and `https` turns on `__Host-` cookies. */
   readonly appUrl: string
+  /**
+   * The session cookie's base name (`config/session.ts` `cookie`; default `strutvane_session`).
+   * `__Host-` is added on https. The framework's CSRF check reads the resolved name from the same
+   * place (`SessionCookieToken`), so the two can never disagree (#105).
+   */
+  readonly sessionCookie?: string
   readonly features?: AuthFeaturesInput
   readonly passwords?: {
     /** Minimum length (default 12; Laravel's is 8, v1's non-regression list keeps 12). */
@@ -125,7 +131,11 @@ export interface AuthConfigInput {
     /** The prefix secret scanners look for (default `svp_`). */
     readonly prefix?: string
   }
-  readonly roles?: RolePreset
+  /**
+   * The role names: a preset (installer question 10), or the app's own list (the keys of the
+   * `config/auth.ts` role map). A list must contain `admin`, the role that manages a team.
+   */
+  readonly roles?: RolePreset | readonly string[]
   readonly teams?: {
     /**
      * Give every new user a personal team (Laravel's teams kit). Default `true`. B2B apps where a
@@ -167,6 +177,8 @@ export interface RateLimits {
 export interface AuthConfig {
   readonly appUrl: string
   readonly secureCookies: boolean
+  /** The session cookie's base name (without `__Host-`). */
+  readonly sessionCookie: string
   readonly features: AuthFeatures
   readonly passwords: { readonly min: number; readonly max: number }
   readonly sessions: {
@@ -283,6 +295,36 @@ function checkPasskeys(config: PasskeyConfig): PasskeyConfig {
   return Object.freeze({ ...config, origins: Object.freeze([...config.origins]) })
 }
 
+const ROLE_NAME = /^[a-z][a-z0-9_-]{0,63}$/
+
+/** A preset's roles, or a checked custom list (lowercase names, no duplicates, with `admin`). */
+function resolveRoles(roles: RolePreset | readonly string[] | undefined): readonly string[] {
+  if (roles === undefined || typeof roles === 'string') {
+    const preset = ROLE_PRESETS[roles ?? 'admin-member']
+    if (preset === undefined)
+      throw new TypeError(`auth config: unknown role preset ${JSON.stringify(roles)}`)
+    return Object.freeze([...preset])
+  }
+  if (!Array.isArray(roles) || roles.some((r) => typeof r !== 'string' || !ROLE_NAME.test(r)))
+    throw new TypeError('auth config: roles must be lowercase names like `admin` or `team-lead`')
+  if (new Set(roles).size !== roles.length) throw new TypeError('auth config: roles has duplicates')
+  if (!roles.includes('admin'))
+    throw new TypeError('auth config: roles must include `admin` (it manages teams and members)')
+  return Object.freeze([...roles])
+}
+
+/** RFC 6265 token characters, and never a prefix (the prefix is decided by the scheme). */
+const COOKIE_BASE = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]{1,128}$/
+
+function checkCookieBase(base: string | undefined): string {
+  if (base === undefined) return 'strutvane_session'
+  if (typeof base !== 'string' || !COOKIE_BASE.test(base) || /^__(?:host|secure)-/i.test(base))
+    throw new TypeError(
+      `auth config: sessionCookie ${JSON.stringify(base)} is not a plain cookie name (the __Host- prefix is added on https)`,
+    )
+  return base
+}
+
 function positive(name: string, value: number): number {
   if (!Number.isFinite(value) || value <= 0)
     throw new RangeError(`auth config: ${name} must be a positive number`)
@@ -366,6 +408,7 @@ export function defineAuthConfig(input: AuthConfigInput): AuthConfig {
   return Object.freeze({
     appUrl: url.origin,
     secureCookies: url.protocol === 'https:',
+    sessionCookie: checkCookieBase(input.sessionCookie),
     features: Object.freeze(features),
     passwords: { min, max },
     sessions: {
@@ -408,7 +451,7 @@ export function defineAuthConfig(input: AuthConfigInput): AuthConfig {
         positive('tokens.maxExpiryDays', input.tokens?.maxExpiryDays ?? 365) * 24 * 60 * MINUTE,
       prefix,
     },
-    roles: Object.freeze([...ROLE_PRESETS[input.roles ?? 'admin-member']]),
+    roles: resolveRoles(input.roles),
     teams: Object.freeze({ personal: input.teams?.personal ?? true }),
     passkeys: input.passkeys === undefined ? undefined : checkPasskeys(input.passkeys),
     limits: Object.freeze(limits),

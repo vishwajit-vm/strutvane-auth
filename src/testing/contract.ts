@@ -19,10 +19,10 @@ import { afterAll, beforeAll, describe, expect, test } from 'vitest'
 import type {
   ErrorReporter,
   IdentityEngine,
+  IdentityRateLimits,
   IdentityResult,
   PasswordResetDelivery,
 } from '../identity/engine.ts'
-import type { IdentityRateLimits } from '../identity/native.ts'
 import {
   browserRequest,
   cookieAttributes,
@@ -46,10 +46,15 @@ export interface EngineFactoryOptions {
   readonly onUnexpectedError: ErrorReporter
 }
 
-/** Builds a fresh engine (and its cleanup) for the contract. */
-export type EngineFactory = (
-  options: EngineFactoryOptions,
-) => Promise<{ engine: IdentityEngine; cleanup: () => Promise<void> }>
+/**
+ * Builds a fresh engine (and its cleanup) for the contract. `ownerRole` is the role a tenant's
+ * creator gets in that engine (default `owner`; the native engine's team admin is `admin`).
+ */
+export type EngineFactory = (options: EngineFactoryOptions) => Promise<{
+  engine: IdentityEngine
+  cleanup: () => Promise<void>
+  ownerRole?: string
+}>
 
 export const CONTRACT_DEV_URL = 'http://localhost:3000'
 export const CONTRACT_PROD_URL = 'https://app.example.com'
@@ -72,9 +77,10 @@ export function runIdentityContract(label: string, factory: EngineFactory): void
     const reported: string[] = []
     let engine: IdentityEngine
     let cleanup: () => Promise<void>
+    let ownerRole = 'owner'
 
     beforeAll(async () => {
-      ;({ engine, cleanup } = await factory({
+      const built = await factory({
         baseURL: CONTRACT_DEV_URL,
         deliverPasswordReset: mailbox.deliver,
         rateLimits: CONTRACT_RATE_LIMITS,
@@ -82,7 +88,10 @@ export function runIdentityContract(label: string, factory: EngineFactory): void
         onUnexpectedError: (context) => {
           reported.push(context)
         },
-      }))
+      })
+      engine = built.engine
+      cleanup = built.cleanup
+      ownerRole = built.ownerRole ?? 'owner'
     })
     afterAll(async () => cleanup())
 
@@ -119,23 +128,23 @@ export function runIdentityContract(label: string, factory: EngineFactory): void
           { email: testEmail('weak'), password: 'short', name: 'W' },
           req(),
         )
-        expect(err(weak)).toEqual({ code: 'VALIDATION_FAILED', status: 422 })
+        expect(err(weak)).toEqual({ code: 'validation_failed', status: 422 })
         const eleven = await engine.signUp(
           { email: testEmail('eleven'), password: '12345678901', name: 'E' },
           req(),
         )
-        expect(code(eleven)).toBe('VALIDATION_FAILED')
+        expect(code(eleven)).toBe('validation_failed')
         const bad = await engine.signUp(
           { email: 'not-an-email', password: TEST_PASSWORD, name: 'B' },
           req(),
         )
-        expect(code(bad)).toBe('VALIDATION_FAILED')
+        expect(code(bad)).toBe('validation_failed')
         for (const name of ['', 'n'.repeat(201)]) {
           const result = await engine.signUp(
             { email: testEmail('name'), password: TEST_PASSWORD, name },
             req(),
           )
-          expect(code(result)).toBe('VALIDATION_FAILED')
+          expect(code(result)).toBe('validation_failed')
         }
       })
 
@@ -145,16 +154,16 @@ export function runIdentityContract(label: string, factory: EngineFactory): void
           { email: address.toUpperCase(), password: TEST_PASSWORD, name: 'Dup' },
           req(),
         )
-        expect(err(again)).toEqual({ code: 'EMAIL_UNAVAILABLE', status: 422 })
+        expect(err(again)).toEqual({ code: 'email_unavailable', status: 422 })
       })
 
       test('malformed (non-string) input is a validation failure, never an internal error', async () => {
         const result = await engine.signUp({ email: 42, password: null, name: {} } as never, req())
-        expect(code(result)).toBe('VALIDATION_FAILED')
+        expect(code(result)).toBe('validation_failed')
         const signIn = await engine.signIn({ email: ['x'], password: 7 } as never, req())
-        expect(code(signIn)).toBe('INVALID_CREDENTIALS')
+        expect(code(signIn)).toBe('invalid_credentials')
         const reset = await engine.startPasswordReset({ email: { $ne: '' } } as never, req())
-        expect(code(reset)).toBe('VALIDATION_FAILED')
+        expect(code(reset)).toBe('validation_failed')
       })
     })
 
@@ -169,7 +178,7 @@ export function runIdentityContract(label: string, factory: EngineFactory): void
           { email: testEmail('ghost'), password: 'definitely wrong pw' },
           req(),
         )
-        expect(err(wrong)).toEqual({ code: 'INVALID_CREDENTIALS', status: 401 })
+        expect(err(wrong)).toEqual({ code: 'invalid_credentials', status: 401 })
         expect(err(unknown)).toEqual(err(wrong))
         expect(wrong.headers.getSetCookie()).toEqual([])
         expect(unknown.headers.getSetCookie()).toEqual([])
@@ -226,7 +235,7 @@ export function runIdentityContract(label: string, factory: EngineFactory): void
         expect(await engine.getActor(req(jar))).not.toBeNull()
         expect((await engine.signOut(req(jar))).ok).toBe(true)
         expect(await engine.getActor(req(stolenCopy))).toBeNull()
-        expect(code(await engine.signOut(req(newJar())))).toBe('UNAUTHENTICATED')
+        expect(code(await engine.signOut(req(newJar())))).toBe('unauthenticated')
       })
     })
 
@@ -241,13 +250,13 @@ export function runIdentityContract(label: string, factory: EngineFactory): void
             req(newJar(), ip),
           )
         }
-        expect(last && code(last)).toBe('RATE_LIMITED')
+        expect(last && code(last)).toBe('rate_limited')
         expect(last && !last.ok ? last.error.retryAfterSeconds : 0).toBeGreaterThan(0)
         expect(Number(last?.headers.get('retry-after'))).toBeGreaterThan(0)
         // Even the correct password is refused while limited…
         expect(
           code(await engine.signIn({ email: address, password: TEST_PASSWORD }, req(newJar(), ip))),
-        ).toBe('RATE_LIMITED')
+        ).toBe('rate_limited')
         // …but another client is not affected.
         expect(
           code(
@@ -273,7 +282,7 @@ export function runIdentityContract(label: string, factory: EngineFactory): void
             code(await engine.signIn({ email: address, password: 'wrong wrong wrong' }, request)),
           )
         }
-        expect(codes.at(-1)).toBe('RATE_LIMITED')
+        expect(codes.at(-1)).toBe('rate_limited')
       })
 
       test('a per-account limit stops a distributed attack from many IPs', async () => {
@@ -289,14 +298,14 @@ export function runIdentityContract(label: string, factory: EngineFactory): void
             ),
           )
         }
-        expect(codes.slice(0, -1).every((c) => c === 'INVALID_CREDENTIALS')).toBe(true)
-        expect(codes.at(-1)).toBe('RATE_LIMITED')
+        expect(codes.slice(0, -1).every((c) => c === 'invalid_credentials')).toBe(true)
+        expect(codes.at(-1)).toBe('rate_limited')
         // The account key is the normalised email: case changes don't reset it.
         expect(
           code(
             await engine.signIn({ email: address.toUpperCase(), password: TEST_PASSWORD }, req()),
           ),
-        ).toBe('RATE_LIMITED')
+        ).toBe('rate_limited')
       })
 
       test('requests without a known client address share ONE fallback bucket (fail closed)', async () => {
@@ -308,12 +317,12 @@ export function runIdentityContract(label: string, factory: EngineFactory): void
             code(
               await engine.signIn({ email: a.address, password: 'wrong wrong wrong' }, noPeer()),
             ),
-          ).toBe('INVALID_CREDENTIALS')
+          ).toBe('invalid_credentials')
         }
         // The per-IP limit is not skipped: the next peer-less attempt is limited, for any account.
         expect(
           code(await engine.signIn({ email: b.address, password: TEST_PASSWORD }, noPeer())),
-        ).toBe('RATE_LIMITED')
+        ).toBe('rate_limited')
         // Requests with a known peer are unaffected.
         expect(
           code(await engine.signIn({ email: b.address, password: TEST_PASSWORD }, req())),
@@ -340,12 +349,12 @@ export function runIdentityContract(label: string, factory: EngineFactory): void
           { token: 'not-a-real-token', newPassword: TEST_NEW_PASSWORD },
           req(),
         )
-        expect(err(bad)).toEqual({ code: 'INVALID_TOKEN', status: 400 })
+        expect(err(bad)).toEqual({ code: 'invalid_token', status: 400 })
         const nonString = await engine.completePasswordReset(
           { token: 12 as never, newPassword: TEST_NEW_PASSWORD },
           req(),
         )
-        expect(code(nonString)).toBe('INVALID_TOKEN')
+        expect(code(nonString)).toBe('invalid_token')
 
         expect(
           (await engine.completePasswordReset({ token, newPassword: TEST_NEW_PASSWORD }, req())).ok,
@@ -354,11 +363,11 @@ export function runIdentityContract(label: string, factory: EngineFactory): void
           { token, newPassword: 'yet another long password' },
           req(),
         )
-        expect(code(reused)).toBe('INVALID_TOKEN')
+        expect(code(reused)).toBe('invalid_token')
 
         expect(await engine.getActor(req(jar))).toBeNull() // old session revoked
         expect(code(await engine.signIn({ email: address, password: TEST_PASSWORD }, req()))).toBe(
-          'INVALID_CREDENTIALS',
+          'invalid_credentials',
         )
         expect(
           code(await engine.signIn({ email: address, password: TEST_NEW_PASSWORD }, req())),
@@ -384,7 +393,7 @@ export function runIdentityContract(label: string, factory: EngineFactory): void
           { token: older, newPassword: 'a password the owner never chose' },
           req(),
         )
-        expect(code(stale)).toBe('INVALID_TOKEN')
+        expect(code(stale)).toBe('invalid_token')
         expect(
           code(await engine.signIn({ email: address, password: TEST_NEW_PASSWORD }, req())),
         ).toBe('ok')
@@ -392,7 +401,7 @@ export function runIdentityContract(label: string, factory: EngineFactory): void
     })
 
     describe('tenants and roles', () => {
-      test('creating a tenant makes the creator its owner; the actor carries tenantId and roles', async () => {
+      test('creating a tenant makes the creator its owner (the engine ownerRole); the actor carries tenantId and roles', async () => {
         const owner = await signedUpUser('owner')
         const created = await engine.createTenant(
           { name: 'Acme', slug: `acme-${owner.id.slice(-8)}` },
@@ -408,17 +417,17 @@ export function runIdentityContract(label: string, factory: EngineFactory): void
         )
         expect(switched.ok ? switched.value.actor : null).toMatchObject({
           tenantId: created.value.tenantId,
-          roles: ['owner'],
+          roles: [ownerRole],
         })
         const actor = await engine.getActor(req(store(owner.jar, switched)))
-        expect(actor).toMatchObject({ tenantId: created.value.tenantId, roles: ['owner'] })
+        expect(actor).toMatchObject({ tenantId: created.value.tenantId, roles: [ownerRole] })
         const list = await engine.listTenants(req(owner.jar))
         expect(list.ok ? list.value : null).toEqual([
           {
             tenantId: created.value.tenantId,
             name: 'Acme',
             slug: created.value.slug,
-            roles: ['owner'],
+            roles: [ownerRole],
           },
         ])
       })
@@ -443,11 +452,11 @@ export function runIdentityContract(label: string, factory: EngineFactory): void
           'garbage',
         ]) {
           const refused = await engine.switchTenant({ tenantId }, req(ownerB.jar))
-          expect(code(refused)).toBe('FORBIDDEN')
+          expect(code(refused)).toBe('forbidden')
           store(ownerB.jar, refused)
           const actor = await engine.getActor(req(ownerB.jar))
           expect(actor?.tenantId).toBe(b.value.tenantId)
-          expect(actor?.roles).toEqual(['owner'])
+          expect(actor?.roles).toEqual([ownerRole])
         }
       })
 
@@ -468,7 +477,7 @@ export function runIdentityContract(label: string, factory: EngineFactory): void
           { tenantId: "x' OR '1'='1" },
           req(outsider.jar),
         )
-        expect(err(intoA)).toEqual({ code: 'FORBIDDEN', status: 403 })
+        expect(err(intoA)).toEqual({ code: 'forbidden', status: 403 })
         expect(err(intoUnknown)).toEqual(err(intoA))
         expect(err(intoGarbage)).toEqual(err(intoA))
         expect((await engine.getActor(req(outsider.jar)))?.tenantId).toBeUndefined()
@@ -512,7 +521,7 @@ export function runIdentityContract(label: string, factory: EngineFactory): void
           code(
             await engine.addMemberAsSystem({ tenantId: 'nope', userId: 'nope', role: 'member' }),
           ),
-        ).toBe('VALIDATION_FAILED')
+        ).toBe('validation_failed')
         expect(
           code(
             await engine.removeMemberAsSystem({
@@ -520,7 +529,7 @@ export function runIdentityContract(label: string, factory: EngineFactory): void
               userId: 'x',
             }),
           ),
-        ).toBe('VALIDATION_FAILED')
+        ).toBe('validation_failed')
       })
 
       test('system operations: users, tenants and members (seeders, CLI, membership admin)', async () => {
@@ -537,7 +546,7 @@ export function runIdentityContract(label: string, factory: EngineFactory): void
         expect(created.value.email).toBe(email.toLowerCase())
         expect(
           code(await engine.createUserAsSystem({ email, password: TEST_PASSWORD, name: 'Again' })),
-        ).toBe('EMAIL_UNAVAILABLE')
+        ).toBe('email_unavailable')
         expect(
           code(
             await engine.createUserAsSystem({
@@ -546,7 +555,7 @@ export function runIdentityContract(label: string, factory: EngineFactory): void
               name: 'W',
             }),
           ),
-        ).toBe('VALIDATION_FAILED')
+        ).toBe('validation_failed')
         const found = await engine.findUserAsSystem({ email: email.toUpperCase() })
         expect(found.ok ? found.value?.id : null).toBe(created.value.id)
         const missing = await engine.findUserAsSystem({ email: testEmail('nobody') })
@@ -564,13 +573,13 @@ export function runIdentityContract(label: string, factory: EngineFactory): void
           slug,
           ownerUserId: created.value.id,
         })
-        expect(tenant.ok ? tenant.value.roles : null).toEqual(['owner'])
+        expect(tenant.ok ? tenant.value.roles : null).toEqual([ownerRole])
         if (!tenant.ok) return
         expect(
           code(
             await engine.createTenantAsSystem({ name: 'Dup', slug, ownerUserId: created.value.id }),
           ),
-        ).toBe('VALIDATION_FAILED')
+        ).toBe('validation_failed')
         const bySlug = await engine.findTenantAsSystem({ slug })
         expect(bySlug.ok ? bySlug.value?.tenantId : null).toBe(tenant.value.tenantId)
 
@@ -593,10 +602,10 @@ export function runIdentityContract(label: string, factory: EngineFactory): void
         const roster = await engine.listMembersAsSystem({ tenantId: tenant.value.tenantId })
         const rows = roster.ok ? [...roster.value].sort((a, b) => a.name.localeCompare(b.name)) : []
         expect(rows.map((m) => [m.name, m.roles])).toEqual([
-          ['System User', ['owner']],
+          ['System User', [ownerRole]],
           ['Viewer', ['member']],
         ])
-        expect(code(await engine.listMembersAsSystem({ tenantId: 'x' }))).toBe('VALIDATION_FAILED')
+        expect(code(await engine.listMembersAsSystem({ tenantId: 'x' }))).toBe('validation_failed')
         expect(
           code(
             await engine.addMemberAsSystem({
@@ -605,14 +614,14 @@ export function runIdentityContract(label: string, factory: EngineFactory): void
               role: 'member',
             }),
           ),
-        ).toBe('VALIDATION_FAILED')
+        ).toBe('validation_failed')
       })
 
       test('tenant operations require a session', async () => {
-        expect(code(await engine.listTenants(req()))).toBe('UNAUTHENTICATED')
-        expect(code(await engine.switchTenant({ tenantId: 'x' }, req()))).toBe('UNAUTHENTICATED')
+        expect(code(await engine.listTenants(req()))).toBe('unauthenticated')
+        expect(code(await engine.switchTenant({ tenantId: 'x' }, req()))).toBe('unauthenticated')
         expect(code(await engine.createTenant({ name: 'X', slug: 'x-nosession' }, req()))).toBe(
-          'UNAUTHENTICATED',
+          'unauthenticated',
         )
       })
     })

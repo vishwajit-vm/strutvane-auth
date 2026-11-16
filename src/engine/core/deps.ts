@@ -157,10 +157,22 @@ export type CookieKind = keyof typeof COOKIE_NAMES
 
 /** A cookie's name for this app: `__Host-` prefixed on https, so a sibling host cannot set or shadow it. */
 export function cookieName(deps: AuthDeps, kind: CookieKind): string {
-  return resolveCookieName(deps.config.secureCookies, kind)
+  return resolveCookieName(deps.config.secureCookies, kind, deps.config.sessionCookie)
 }
 
-/** {@link cookieName} without the deps: what `auth.cookieNames` is built from. */
-export function resolveCookieName(secure: boolean, kind: CookieKind): string {
-  return secure ? `__Host-${COOKIE_NAMES[kind]}` : COOKIE_NAMES[kind]
+/**
+ * {@link cookieName} without the deps: what `auth.cookieNames` is built from. `sessionBase`
+ * replaces the session cookie's base name (`config/session.ts` `cookie`; the framework's CSRF
+ * check reads the same value, #105).
+ *
+ * @example
+ * resolveCookieName(true, 'session') // '__Host-strutvane_session'
+ */
+export function resolveCookieName(
+  secure: boolean,
+  kind: CookieKind,
+  sessionBase: string = COOKIE_NAMES.session,
+): string {
+  const base = kind === 'session' ? sessionBase : COOKIE_NAMES[kind]
+  return secure ? `__Host-${base}` : base
 }

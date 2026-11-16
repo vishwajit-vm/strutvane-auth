@@ -23,6 +23,82 @@ export {
   recordAudit,
 } from './audit/audit.ts'
 export { type AuthConfig, defineAuthConfig, type SocialProviderConfig } from './config.ts'
+// The native identity engine (ADR-0023): the auth core and its ports. Stores: memory here,
+// PostgreSQL in `@strutvane/auth/postgres`, SQLite in `@strutvane/auth/sqlite`.
+export {
+  type Auth,
+  type AuthPorts,
+  type AuthState as AuthSessionState,
+  createAuth,
+} from './engine/auth.ts'
+export {
+  type AuthConfig as AuthEngineConfig,
+  type AuthConfigInput as AuthEngineConfigInput,
+  type AuthFeatures,
+  type AuthFeaturesInput,
+  DEFAULT_FEATURES,
+  DEFAULT_LIMITS,
+  defineAuthConfig as defineAuthEngineConfig,
+  type PasskeyConfig,
+  type RateLimits,
+  type RateRule,
+  ROLE_PRESETS,
+  type RolePreset,
+} from './engine/config.ts'
+export { COOKIE_NAMES, type CookieKind } from './engine/core/deps.ts'
+export type { ChallengeMethod, SignInResult } from './engine/core/sign-in.ts'
+export {
+  AUTH_ERROR_STATUS,
+  AUTH_ISSUE_MESSAGES,
+  AUTH_MESSAGES,
+  AuthError,
+  type AuthErrorCode,
+  type AuthErrorOptions,
+  type AuthIssue,
+  type AuthIssueInput,
+  toIssue,
+} from './engine/errors.ts'
+export { type AuthHandlerOptions, createAuthHandler } from './engine/http/routes.ts'
+export {
+  createScryptHasher,
+  DEFAULT_SCRYPT,
+  type LegacyVerifier,
+  type PasswordHasher,
+  type ScryptParams,
+} from './engine/password/hasher.ts'
+export {
+  commonPasswordCheck,
+  type PasswordCheck,
+  type PasswordVerdict,
+  rangeBreachCheck,
+} from './engine/password/rules.ts'
+export { type Clock, type ManualClock, manualClock, systemClock } from './engine/ports/clock.ts'
+export type { AuthRequest, CookieJar, CookieOptions } from './engine/ports/cookies.ts'
+export type { CounterStore } from './engine/ports/counter-store.ts'
+export type {
+  AuthEvent,
+  AuthEventSink,
+  AuthEventType,
+  AuthLogger,
+  LoginMethod,
+  SecondFactor,
+} from './engine/ports/events.ts'
+export type { AuthMail, AuthMailer } from './engine/ports/mailer.ts'
+export type * from './engine/ports/store.ts'
+export type { PasskeyMode, PasskeyView } from './engine/services/passkeys.ts'
+export type { SessionView } from './engine/services/sessions.ts'
+export type {
+  MembershipOutcome,
+  SystemService,
+  TeamMemberView,
+} from './engine/services/system.ts'
+export type { CurrentTeam, InvitationView } from './engine/services/teams.ts'
+export {
+  abilityGranted,
+  type TokenAuthentication,
+  type TokenView,
+} from './engine/services/tokens.ts'
+export { memoryAuthStore, memoryCounterStore } from './engine/store/memory.ts'
 export {
   AUTH_ERRORS,
   FieldNotLoadedError,
@@ -30,6 +106,7 @@ export {
   NotListFilterableError,
   PolicyDefinitionError,
 } from './errors.ts'
+export { AUTH_DOMAIN_EVENTS, type AuthDomainPayload, domainEventSink } from './events.ts'
 export {
   normalizeIp,
   rateLimitSubject,
@@ -39,28 +116,33 @@ export {
 } from './http/client-ip.ts'
 export { attachRequestMeta, type RequestMeta, requestMeta } from './http/request-meta.ts'
 export {
+  type ActorAttributes,
   type Authentication,
   type CreateTenantInput,
+  DEFAULT_RATE_LIMITS,
   type ErrorReporter,
   fail,
+  type GlobalRoles,
   IDENTITY_STATUS,
   type IdentityEngine,
   type IdentityError,
   type IdentityErrorCode,
+  type IdentityRateLimits,
   type IdentityResult,
+  type IdentityUser,
   ok,
   type PasswordResetDelivery,
   type SignInInput,
   type SignUpInput,
+  type TenantInfo,
+  type TenantMember,
   type TenantMembership,
 } from './identity/engine.ts'
+export { engineConfigFrom } from './identity/engine-config.ts'
 export {
-  type ActorAttributes,
   createNativeEngine,
-  DEFAULT_RATE_LIMITS,
-  type GlobalRoles,
-  type IdentityRateLimits,
   type NativeEngineOptions,
+  type NativeIdentityEngine,
 } from './identity/native.ts'
 export {
   accountKey,
@@ -159,3 +241,4 @@ export {
   type TenantResolveInput,
   type TenantResolver,
 } from './tenancy/resolver.ts'
+export { AuthMailerToken } from './tokens.ts'

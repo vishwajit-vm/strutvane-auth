@@ -161,13 +161,13 @@ export async function openIdentityAdmin(
   const engine = identity.engine
   const userByEmail = async (email: string): Promise<IdentityUser> => {
     const found = unwrap(await engine.findUserAsSystem({ email }), `looking up ${email}`)
-    if (!found) throw new IdentityAdminError('VALIDATION_FAILED', `no account with email ${email}`)
+    if (!found) throw new IdentityAdminError('validation_failed', `no account with email ${email}`)
     return found
   }
   const tenantOf = async (tenant: string): Promise<string> => {
     if (UUID.test(tenant)) return tenant.toLowerCase()
     const found = unwrap(await engine.findTenantAsSystem({ slug: tenant }), `looking up ${tenant}`)
-    if (!found) throw new IdentityAdminError('VALIDATION_FAILED', `no tenant with slug ${tenant}`)
+    if (!found) throw new IdentityAdminError('validation_failed', `no tenant with slug ${tenant}`)
     return found.tenantId
   }
   return {
@@ -198,7 +198,7 @@ export async function openIdentityAdmin(
         : ['owner', 'member', 'viewer']
       if (!roles.includes(input.role))
         throw new IdentityAdminError(
-          'VALIDATION_FAILED',
+          'validation_failed',
           `role "${input.role}" is not defined in config/auth.ts (roles: ${roles.join(', ')})`,
         )
       const tenantId = await tenantOf(input.tenant)

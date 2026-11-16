@@ -96,7 +96,7 @@ async function guarded(
   } catch (error) {
     if (error instanceof IdentityAdminError) {
       ctx.out.warn(error.message)
-      return { exitCode: error.code === 'EMAIL_UNAVAILABLE' ? 4 : 3 }
+      return { exitCode: error.code === 'email_unavailable' ? 4 : 3 }
     }
     if (error instanceof IdentitySetupError) {
       ctx.out.warn(error.message)
@@ -203,7 +203,7 @@ const userCreateCommand: AuthCommand = {
       try {
         const existing = await idp.engine.findUserAsSystem({ email })
         if (existing.ok && existing.value)
-          throw new IdentityAdminError('EMAIL_UNAVAILABLE', `${email} already has an account`)
+          throw new IdentityAdminError('email_unavailable', `${email} already has an account`)
         const user = await idp.ensureUser({ email, name, password })
         ctx.out.success(`Created ${user.email} (${user.id})`)
         return { data: { id: user.id, email: user.email } }

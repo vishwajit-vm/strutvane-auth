@@ -9,7 +9,7 @@
  *    a stable code (RFC-0003). Raw engine errors never escape: they could leak internals.
  * 3. **Cookies travel as headers.** Operations that change the session return the `Set-Cookie`
  *    headers the host must copy onto its response. The engine owns cookie names and attributes.
- * 4. **Fail closed.** Anything unexpected becomes `INTERNAL_ERROR`, and `authenticate` resolves to
+ * 4. **Fail closed.** Anything unexpected becomes `internal_error`, and `authenticate` resolves to
  *    an anonymous actor.
  * 5. **Tenant and roles come from membership, on every request** (never trusted from the session).
  *
@@ -19,35 +19,47 @@
  */
 import type { Actor } from '@strutvane/framework/contracts'
 
-/** Stable error codes. Messages are rendered from catalogs by the host, never taken from the engine. */
+/**
+ * Stable error codes, lowercase snake_case like every Strutvane problem code (CONSISTENCY #68).
+ * Messages are rendered from catalogs by the host, never taken from the engine.
+ */
 export type IdentityErrorCode =
   /** Input failed validation (password too short, malformed email…). */
-  | 'VALIDATION_FAILED'
+  | 'validation_failed'
   /** Wrong email or password. Identical for unknown emails (no user enumeration). */
-  | 'INVALID_CREDENTIALS'
+  | 'invalid_credentials'
   /** Sign-up with an email that cannot be used. Reveals that an account exists (documented trade-off). */
-  | 'EMAIL_UNAVAILABLE'
+  | 'email_unavailable'
   /** Too many attempts; retry after `retryAfterSeconds`. */
-  | 'RATE_LIMITED'
+  | 'rate_limited'
   /** A reset token that is invalid, expired or already used. */
-  | 'INVALID_TOKEN'
+  | 'invalid_token'
   /** No valid session. */
-  | 'UNAUTHENTICATED'
+  | 'unauthenticated'
+  /**
+   * The password was right, but the account has two-factor on: the response carries the cookie
+   * of a PENDING sign-in (a guest everywhere), finished at the engine's two-factor challenge.
+   */
+  | 'two_factor_required'
+  /** Password sign-in waits until the address is verified (account pre-hijacking, #114). */
+  | 'email_not_verified'
   /** Authenticated, but not allowed (e.g. switching to a tenant you are not a member of). */
-  | 'FORBIDDEN'
+  | 'forbidden'
   /** The engine failed unexpectedly. Details go to the reporter, never to the client. */
-  | 'INTERNAL_ERROR'
+  | 'internal_error'
 
 /** The HTTP status for each code, so every engine answers identically. */
 export const IDENTITY_STATUS: Readonly<Record<IdentityErrorCode, number>> = Object.freeze({
-  VALIDATION_FAILED: 422,
-  INVALID_CREDENTIALS: 401,
-  EMAIL_UNAVAILABLE: 422,
-  RATE_LIMITED: 429,
-  INVALID_TOKEN: 400,
-  UNAUTHENTICATED: 401,
-  FORBIDDEN: 403,
-  INTERNAL_ERROR: 500,
+  validation_failed: 422,
+  invalid_credentials: 401,
+  email_unavailable: 422,
+  rate_limited: 429,
+  invalid_token: 400,
+  unauthenticated: 401,
+  two_factor_required: 401,
+  email_not_verified: 403,
+  forbidden: 403,
+  internal_error: 500,
 })
 
 /** A failed identity operation. */
@@ -55,7 +67,7 @@ export interface IdentityError {
   readonly code: IdentityErrorCode
   /** The HTTP status the host should answer with. */
   readonly status: number
-  /** Present for `RATE_LIMITED`. */
+  /** Present for `rate_limited`. */
   readonly retryAfterSeconds?: number
 }
 
@@ -181,7 +193,7 @@ export interface IdentityEngine {
 
   /**
    * Make `tenantId` the session's active tenant. Not a member and does not exist both return
-   * `FORBIDDEN` (indistinguishable on purpose).
+   * `forbidden` (indistinguishable on purpose).
    */
   switchTenant(
     input: { readonly tenantId: string },
@@ -213,7 +225,7 @@ export interface IdentityEngine {
 
   /**
    * SYSTEM operation: create an account without signing it in (seeders, `sv auth:user:create`).
-   * Same validation as sign-up; `EMAIL_UNAVAILABLE` when the email is taken. Rate limits do not
+   * Same validation as sign-up; `email_unavailable` when the email is taken. Rate limits do not
    * apply (no client is involved).
    */
   createUserAsSystem(input: SignUpInput): Promise<IdentityResult<IdentityUser>>
@@ -231,6 +243,44 @@ export interface IdentityEngine {
     readonly tenantId: string
   }): Promise<IdentityResult<readonly TenantMember[]>>
 }
+
+/** Extra actor attributes for ABAC rules (department, region…), resolved per request. */
+export type ActorAttributes = (input: {
+  readonly userId: string
+  readonly tenantId: string | undefined
+}) => Promise<Readonly<Record<string, unknown>>> | Readonly<Record<string, unknown>>
+
+/** Resolves the global (non-tenant) roles of a user. */
+export type GlobalRoles = (user: {
+  readonly userId: string
+  readonly email: string
+}) => readonly string[] | Promise<readonly string[]>
+
+/** Rate limits applied by identity engines (the identity contract configures them). */
+export interface IdentityRateLimits {
+  /** Sign-in attempts per client IP. Default 10 per minute. */
+  readonly signInPerIp?: RateLimitRuleShape
+  /** Sign-in attempts per account (email). Default 20 per 15 minutes. */
+  readonly signInPerAccount?: RateLimitRuleShape
+  /** Sign-ups per client IP. Default 10 per hour. */
+  readonly signUpPerIp?: RateLimitRuleShape
+  /** Password-reset requests per IP and per account. Default 5 per 15 minutes. */
+  readonly passwordReset?: RateLimitRuleShape
+}
+
+/** One limit: at most `max` hits per `windowSeconds`. */
+export interface RateLimitRuleShape {
+  readonly windowSeconds: number
+  readonly max: number
+}
+
+/** Defaults for {@link IdentityRateLimits}. */
+export const DEFAULT_RATE_LIMITS: Required<IdentityRateLimits> = Object.freeze({
+  signInPerIp: { windowSeconds: 60, max: 10 },
+  signInPerAccount: { windowSeconds: 900, max: 20 },
+  signUpPerIp: { windowSeconds: 3600, max: 10 },
+  passwordReset: { windowSeconds: 900, max: 5 },
+})
 
 /** A successful result. */
 export function ok<T>(value: T, headers: Headers = new Headers()): IdentityResult<T> {

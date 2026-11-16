@@ -60,6 +60,13 @@ export interface SystemService {
    */
   setRoles(userId: string, roles: readonly string[]): Promise<void>
   /**
+   * A user's global roles (sorted).
+   *
+   * @example
+   * const roles = await auth.system.rolesOf(ada.id) // ['admin']
+   */
+  rolesOf(userId: string): Promise<readonly string[]>
+  /**
    * Create a team owned by `ownerId` (who becomes its admin). `validation_failed` for a bad name
    * or slug, a taken slug, or an unknown owner.
    *
@@ -173,6 +180,8 @@ export function systemService(deps: AuthDeps): SystemService {
     },
 
     setRoles,
+
+    rolesOf: (userId) => deps.store.listUserRoles(userId),
 
     async createTeam(input) {
       const team: TeamRecord = {

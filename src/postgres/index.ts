@@ -10,6 +10,21 @@
  *
  * @module
  */
+
+export {
+  ensurePostgresAuthSchema,
+  type FrameworkDatabaseLike,
+  frameworkDatabaseClient,
+  type PGliteLike,
+  type PgPoolLike,
+  type PostgresClient,
+  type PostgresRow,
+  pgliteClient,
+  pgPoolClient,
+  postgresAuthStore,
+  postgresCounterStore,
+} from '../engine/store/postgres.ts'
+export { POSTGRES_AUTH_STATEMENTS } from '../engine/store/postgres-schema.ts'
 export {
   type Queryable,
   type TenancyAuditOptions,

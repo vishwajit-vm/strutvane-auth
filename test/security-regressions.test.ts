@@ -252,19 +252,10 @@ describe('rate-limit evasion', () => {
       const r = await engine.signIn({ email, password: 'x'.repeat(12) }, noPeer())
       codes.push(r.ok ? 'ok' : r.error.code)
     }
-    expect(codes).toEqual(['INVALID_CREDENTIALS', 'RATE_LIMITED', 'RATE_LIMITED'])
+    expect(codes).toEqual(['invalid_credentials', 'rate_limited', 'rate_limited'])
     expect(warnings).toHaveLength(1)
-    const lax = createNativeEngine({
-      baseURL: 'http://localhost:3000',
-      deliverPasswordReset: async () => undefined,
-      scryptCost: 2 ** 14,
-      rateLimits: { signInPerIp: { windowSeconds: 60, max: 1 } },
-      allowMissingPeer: true,
-    })
-    for (const email of ['a@x.test', 'b@x.test']) {
-      const r = await lax.signIn({ email, password: 'x'.repeat(12) }, noPeer())
-      expect(r.ok ? 'ok' : r.error.code).toBe('INVALID_CREDENTIALS')
-    }
+    // The native engine has no `allowMissingPeer`: an in-process host attaches a peer address
+    // (attachRequestMeta) instead. The option lives on in the deprecated adapter's limiter (above).
   })
 })
 
@@ -611,6 +602,6 @@ describe('password reset links die with the reset', () => {
       { token: first, newPassword: 'attacker chosen password' },
       req(),
     )
-    expect(replay.ok ? 'ok' : replay.error.code).toBe('INVALID_TOKEN')
+    expect(replay.ok ? 'ok' : replay.error.code).toBe('invalid_token')
   })
 })

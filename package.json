@@ -39,6 +39,10 @@
       "types": "./dist/postgres.d.mts",
       "default": "./dist/postgres.mjs"
     },
+    "./sqlite": {
+      "types": "./dist/sqlite.d.mts",
+      "default": "./dist/sqlite.mjs"
+    },
     "./better-auth": {
       "types": "./dist/better-auth.d.mts",
       "default": "./dist/better-auth.mjs"

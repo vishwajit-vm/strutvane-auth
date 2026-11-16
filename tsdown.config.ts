@@ -5,6 +5,7 @@ export default defineConfig({
     index: 'src/index.ts',
     sql: 'src/sql/index.ts',
     postgres: 'src/postgres/index.ts',
+    sqlite: 'src/sqlite.ts',
     'better-auth': 'src/identity/better-auth.ts',
     hono: 'src/middleware/hono.ts',
     node: 'src/middleware/node.ts',
