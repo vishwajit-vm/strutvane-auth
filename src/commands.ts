@@ -163,7 +163,9 @@ const migrationCommand: AuthCommand = {
         }
         // Better Auth answers ";" when nothing is missing.
         const sql = (await identity.compileMigrations()).replace(/^[\s;]+|[\s;]+$/g, '')
-        if (sql === '' && !missing) {
+        // The native engine compiles its whole schema (idempotent), the adapter only what is
+        // missing: either way, nothing to write once the tables exist.
+        if (!missing && (sql === '' || identity.native !== undefined)) {
           ctx.out.success('The auth tables are up to date.')
           return { data: { written: null } }
         }

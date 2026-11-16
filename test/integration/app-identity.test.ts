@@ -1,5 +1,5 @@
 /**
- * The app provider with persistent identity (`session.driver: 'database'` on PostgreSQL 18): the
+ * The app provider with persistent identity (the native engine on PostgreSQL 18): the
  * auth tables come from `sv auth:migration`; accounts, sessions, tenants and memberships survive a
  * restart; the seed admin is created once; seeders and CLI commands write through the admin API;
  * a tenant's owners (and only they) manage its members.
@@ -48,10 +48,12 @@ beforeAll(async () => {
   )
   await writeFile(join(root, 'config/auth.ts'), `export default ${JSON.stringify(authConfig)}\n`)
   process.env['SV_TEST_PASSWORD'] = PASSWORD
+  process.env['APP_KEY'] = `base64:${randomBytes(32).toString('base64')}`
 })
 
 afterAll(async () => {
   delete process.env['SV_TEST_PASSWORD']
+  delete process.env['APP_KEY']
   await db?.drop()
   if (root) await rm(root, { recursive: true, force: true })
 })
@@ -125,7 +127,7 @@ const cookieOf = (r: Response | undefined): string =>
 
 describe('persistent identity in the app provider', () => {
   test('boot refuses before the auth tables exist, naming the fix', async () => {
-    await expect(boot()).rejects.toThrow(/sv auth:migration/)
+    await expect(boot()).rejects.toThrow(/auth:migration/)
   })
 
   test('sv auth:migration writes the tables once; sv migrate applies them', async () => {
@@ -136,7 +138,7 @@ describe('persistent identity in the app provider', () => {
     expect(files[0]).toMatch(/^\d{14}_auth_identity\.sql$/)
     const sql = await readFile(join(root, 'database/migrations', files[0] as string), 'utf8')
     expect(sql).toContain('-- strutvane:migration')
-    expect(sql).toContain('strutvane_rate_limits')
+    expect(sql).toContain('CREATE TABLE IF NOT EXISTS auth_counters')
     // Written but not applied: a second run does not write a duplicate.
     const again = cli()
     await command('auth:migration').run(again.ctx)
@@ -161,10 +163,9 @@ describe('persistent identity in the app provider', () => {
     const me = await second.send('GET', '/api/v1/auth/me', { cookie })
     expect(me.response?.status).toBe(200)
     expect(await me.response?.json()).toMatchObject({ actor: { roles: ['admin'] } })
-    const { rows } = await db.admin.query(
-      `SELECT count(*)::int AS n FROM "user" WHERE email = $1`,
-      ['admin@app.test'],
-    )
+    const { rows } = await db.admin.query(`SELECT count(*)::int AS n FROM users WHERE email = $1`, [
+      'admin@app.test',
+    ])
     expect(rows[0]).toEqual({ n: 1 })
     // Signing out revokes the stored session for good.
     expect((await second.send('POST', '/api/v1/auth/sign-out', { cookie })).response?.status).toBe(
@@ -253,7 +254,7 @@ describe('persistent identity in the app provider', () => {
       ).data
       expect(roster.map((m) => `${m.email}:${m.roles.join()}`).sort()).toEqual([
         'mia@acme.test:member',
-        'olivia@acme.test:owner',
+        'olivia@acme.test:admin',
         'vic@acme.test:viewer',
       ])
       // A viewer (and an outsider using a forged tenant id) gets the same 403 as an unknown tenant.
@@ -344,7 +345,7 @@ describe('persistent identity in the app provider', () => {
       for (let i = 0; i < 2; i++) for (const s of statements) await fresh.admin.query(s)
       const { createAppIdentity } = await import('../../src/identity/app-identity.ts')
       const identity = await createAppIdentity({
-        auth: { secret: SECRET, session: { driver: 'database' } },
+        auth: { identity: 'better-auth', secret: SECRET, session: { driver: 'database' } },
         appUrl: APP,
         database: { default: 'postgres', connection: { url: fresh.url() } },
         logger: { warn: () => undefined, error: () => undefined },

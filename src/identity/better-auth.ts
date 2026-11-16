@@ -163,7 +163,7 @@ const CODE_MAP: Readonly<Record<string, IdentityErrorCode>> = {
   INVALID_EMAIL: 'validation_failed',
   VALIDATION_ERROR: 'validation_failed',
   MISSING_FIELD: 'validation_failed',
-  invalid_token: 'invalid_token',
+  INVALID_TOKEN: 'invalid_token',
   TOKEN_EXPIRED: 'invalid_token',
   ORGANIZATION_ALREADY_EXISTS: 'validation_failed',
   ORGANIZATION_SLUG_ALREADY_TAKEN: 'validation_failed',

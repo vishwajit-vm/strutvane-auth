@@ -6,7 +6,7 @@
  */
 import { randomBytes } from 'node:crypto'
 import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest'
-import { createBetterAuthEngine } from '../../src/identity/better-auth.ts'
+import { BETTER_AUTH_DEPRECATION, createBetterAuthEngine } from '../../src/identity/better-auth.ts'
 import { memoryRateLimitStore } from '../../src/identity/rate-limit.ts'
 import { postgresRateLimitStore, rateLimitTableSql } from '../../src/postgres/index.ts'
 import {
@@ -19,6 +19,14 @@ import {
   testEmail,
 } from '../../src/testing/index.ts'
 import { createDatabase, type TestDatabase } from './helpers.ts'
+
+// Registered at import, before the contract builds the first engine: the adapter is deprecated
+// (ADR-0023) and says so once per process.
+const deprecations: Error[] = []
+process.on('warning', (warning) => {
+  if ((warning as Error & { code?: string }).code === 'STRUTVANE_AUTH_BETTER_AUTH')
+    deprecations.push(warning)
+})
 
 const secret = randomBytes(32).toString('base64')
 const DEV = 'http://localhost:3000'
@@ -175,14 +183,14 @@ describe('Better Auth specifics', () => {
       { name: 'X', slug: slug() },
       new Request(`${DEV}/`, { method: 'POST', headers: foreign.headers }),
     )
-    expect(fromForeign.ok ? 'ok' : fromForeign.error.code).toBe('FORBIDDEN')
+    expect(fromForeign.ok ? 'ok' : fromForeign.error.code).toBe('forbidden')
     const bare = new Headers(foreign.headers)
     bare.delete('origin')
     const fromNowhere = await engine.createTenant(
       { name: 'X', slug: slug() },
       new Request(`${DEV}/`, { method: 'POST', headers: bare }),
     )
-    expect(fromNowhere.ok ? 'ok' : fromNowhere.error.code).toBe('FORBIDDEN')
+    expect(fromNowhere.ok ? 'ok' : fromNowhere.error.code).toBe('forbidden')
     // The same write from the app's own origin works.
     expect((await engine.createTenant({ name: 'X', slug: slug() }, req(jar))).ok).toBe(true)
   })
@@ -227,7 +235,7 @@ describe('Better Auth specifics', () => {
       { email: testEmail('down2'), password: TEST_PASSWORD },
       req(),
     )
-    expect(signIn.ok ? null : signIn.error).toEqual({ code: 'INTERNAL_ERROR', status: 500 })
+    expect(signIn.ok ? null : signIn.error).toEqual({ code: 'internal_error', status: 500 })
     expect(await fragile.getActor(req(jar))).toBeNull()
     expect(consoleError).not.toHaveBeenCalled()
     expect(contexts).toContain('signIn')
@@ -253,5 +261,18 @@ describe('Better Auth specifics', () => {
 
   test('no unexpected errors were reported by the specifics engine', () => {
     expect(reported).toEqual([])
+  })
+})
+
+describe('deprecation (ADR-0023)', () => {
+  test('using the adapter emitted ONE DeprecationWarning that names the open findings', async () => {
+    // Every suite above built engines; the notice is once per process.
+    await new Promise((r) => setImmediate(r))
+    expect(deprecations).toHaveLength(1)
+    expect(deprecations[0]?.name).toBe('DeprecationWarning')
+    expect(deprecations[0]?.message).toBe(BETTER_AUTH_DEPRECATION)
+    expect(BETTER_AUTH_DEPRECATION).toMatch(
+      /raw session and reset tokens.*__Secure-.*rotation.*trustedOrigins.*idleMinutes/,
+    )
   })
 })
