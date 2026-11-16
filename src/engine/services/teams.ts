@@ -37,6 +37,8 @@ import { parseSecret } from '../tokens/formats.ts'
 export interface CurrentTeam {
   readonly id: string
   readonly name: string
+  /** The team's URL-safe handle, or `null` (personal teams, teams created without one). */
+  readonly slug: string | null
   readonly role: string
 }
 
@@ -58,7 +60,10 @@ export interface TeamService {
    * const team = await auth.teams.create(req, { name: 'Acme' })
    * ```
    */
-  create(req: AuthRequest, input: { readonly name: unknown }): Promise<CurrentTeam>
+  create(
+    req: AuthRequest,
+    input: { readonly name: unknown; readonly slug?: unknown },
+  ): Promise<CurrentTeam>
   /** The signed-in user's current team, or `null` (the framework's tenant for this request). */
   current(req: AuthRequest): Promise<CurrentTeam | null>
   /** Every team the user belongs to. */
@@ -99,7 +104,29 @@ export interface TeamService {
   ): Promise<void>
 }
 
-function parseTeamName(value: unknown): string {
+/** A team slug: lowercase letters, digits and inner hyphens, 1-63 characters (a DNS label). */
+const SLUG = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/
+
+/**
+ * `undefined`/`null` (no slug) or a valid slug; anything else is a validation failure.
+ *
+ * @example
+ * parseTeamSlug('acme') // 'acme'
+ */
+export function parseTeamSlug(value: unknown): string | null {
+  if (value === undefined || value === null) return null
+  if (typeof value !== 'string' || !SLUG.test(value))
+    throw new AuthError('validation_failed', { issues: [{ field: 'slug', code: 'invalid' }] })
+  return value
+}
+
+/**
+ * Validate a team name (1-100 characters after trimming).
+ *
+ * @example
+ * parseTeamName(' Acme ') // 'Acme'
+ */
+export function parseTeamName(value: unknown): string {
   if (typeof value !== 'string' || value.trim().length < 1 || value.trim().length > 100)
     throw new AuthError('validation_failed', { issues: [{ field: 'name', code: 'invalid' }] })
   return value.trim()
@@ -114,6 +141,7 @@ export async function createPersonalTeam(
   const team: TeamRecord = {
     id: newId(),
     name: `${user.name}'s team`.slice(0, 100),
+    slug: null,
     personal: true,
     createdAt: deps.clock.now(),
   }
@@ -172,7 +200,9 @@ export function teamService(deps: AuthDeps): TeamService {
     if (teamId === null) return null
     const member = await deps.store.findMember(teamId, active.user.id)
     const team = member ? await deps.store.findTeam(teamId) : undefined
-    return member && team ? { id: team.id, name: team.name, role: member.role } : null
+    return member && team
+      ? { id: team.id, name: team.name, slug: team.slug, role: member.role }
+      : null
   }
 
   return {
@@ -181,14 +211,17 @@ export function teamService(deps: AuthDeps): TeamService {
       const team: TeamRecord = {
         id: newId(),
         name: parseTeamName(input.name),
+        slug: parseTeamSlug(input.slug),
         personal: false,
         createdAt: deps.clock.now(),
       }
-      await deps.store.createTeam(team, { teamId: team.id, userId: active.user.id, role: 'admin' })
+      const owner = { teamId: team.id, userId: active.user.id, role: 'admin' }
+      if (!(await deps.store.createTeam(team, owner)))
+        throw new AuthError('validation_failed', { issues: [{ field: 'slug', code: 'taken' }] })
       await deps.store.updateUser(active.user.id, { currentTeamId: team.id })
       await rotateSession(deps, req, active.session)
       await emit(deps, req, { type: 'team.created', userId: active.user.id, teamId: team.id })
-      return { id: team.id, name: team.name, role: 'admin' }
+      return { id: team.id, name: team.name, slug: team.slug, role: 'admin' }
     },
 
     async current(req) {
@@ -201,7 +234,7 @@ export function teamService(deps: AuthDeps): TeamService {
       const out: CurrentTeam[] = []
       for (const m of await deps.store.listUserTeams(active.user.id)) {
         const team = await deps.store.findTeam(m.teamId)
-        if (team) out.push({ id: team.id, name: team.name, role: m.role })
+        if (team) out.push({ id: team.id, name: team.name, slug: team.slug, role: m.role })
       }
       return out
     },
@@ -212,7 +245,7 @@ export function teamService(deps: AuthDeps): TeamService {
       await deps.store.updateUser(active.user.id, { currentTeamId: team.id })
       await rotateSession(deps, req, active.session)
       await emit(deps, req, { type: 'team.switched', userId: active.user.id, teamId: team.id })
-      return { id: team.id, name: team.name, role: member.role }
+      return { id: team.id, name: team.name, slug: team.slug, role: member.role }
     },
 
     async invite(req, input) {
@@ -314,7 +347,7 @@ export function teamService(deps: AuthDeps): TeamService {
         invitationId: consumed.id,
       })
       const member = await deps.store.findMember(team.id, active.user.id)
-      return { id: team.id, name: team.name, role: member?.role ?? consumed.role }
+      return { id: team.id, name: team.name, slug: team.slug, role: member?.role ?? consumed.role }
     },
 
     async members(req, input) {

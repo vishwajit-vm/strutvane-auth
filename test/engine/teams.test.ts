@@ -104,6 +104,7 @@ describe.each(STORES)('teams (%s store)', (store) => {
     expect(await h.auth.teams.accept(vic.req, { token })).toEqual({
       id: team.id,
       name: 'Acme',
+      slug: null,
       role: 'viewer',
     })
     expect(vic.get('strutvane_session')).not.toBe(before) // privilege change → rotation

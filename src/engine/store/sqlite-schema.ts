@@ -86,6 +86,7 @@ CREATE INDEX IF NOT EXISTS personal_access_tokens_user_id ON personal_access_tok
 CREATE TABLE IF NOT EXISTS teams (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
+  slug TEXT UNIQUE,
   personal INTEGER NOT NULL,
   created_at INTEGER NOT NULL
 );

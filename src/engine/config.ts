@@ -126,6 +126,13 @@ export interface AuthConfigInput {
     readonly prefix?: string
   }
   readonly roles?: RolePreset
+  readonly teams?: {
+    /**
+     * Give every new user a personal team (Laravel's teams kit). Default `true`. B2B apps where a
+     * team is a customer company turn it off, so users join teams only by invitation.
+     */
+    readonly personal?: boolean
+  }
   readonly passkeys?: PasskeyConfig
   readonly limits?: Partial<RateLimits>
   readonly lockout?: {
@@ -187,6 +194,7 @@ export interface AuthConfig {
     readonly prefix: string
   }
   readonly roles: readonly string[]
+  readonly teams: { readonly personal: boolean }
   readonly passkeys: PasskeyConfig | undefined
   readonly limits: RateLimits
   readonly lockout: { readonly threshold: number; readonly baseMs: number; readonly maxMs: number }
@@ -401,6 +409,7 @@ export function defineAuthConfig(input: AuthConfigInput): AuthConfig {
       prefix,
     },
     roles: Object.freeze([...ROLE_PRESETS[input.roles ?? 'admin-member']]),
+    teams: Object.freeze({ personal: input.teams?.personal ?? true }),
     passkeys: input.passkeys === undefined ? undefined : checkPasskeys(input.passkeys),
     limits: Object.freeze(limits),
     lockout: { threshold, baseMs: lockoutBaseMs, maxMs: lockoutMaxMs },

@@ -186,11 +186,16 @@ export function memoryAuthStore(): AuthStore {
     },
 
     async createTeam(team, owner) {
+      if (team.slug !== null && [...teams.values()].some((t) => t.slug === team.slug)) return false
       teams.set(team.id, team)
       members.set(mKey(owner.teamId, owner.userId), owner)
+      return true
     },
     async findTeam(id) {
       return teams.get(id)
+    },
+    async findTeamBySlug(slug) {
+      return [...teams.values()].find((t) => t.slug === slug)
     },
     async findMember(teamId, userId) {
       return members.get(mKey(teamId, userId))

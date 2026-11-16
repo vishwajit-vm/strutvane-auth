@@ -146,3 +146,38 @@ describe('#25/#107: feature switches', () => {
     await rejectsWith(() => off.auth.passwords.confirm(b.req, { password: PASSWORD }), 'not_found')
   })
 })
+
+describe('teams as tenants: slugs and the personal-team switch', () => {
+  it.each(['memory', 'sqlite'] as const)(
+    '%s: slugs are validated and unique; personal teams can be off',
+    async (store) => {
+      const h = harness({
+        store,
+        config: { features: { teams: true }, teams: { personal: false } },
+      })
+      const ada = await h.user('ada@acme.test')
+      expect(ada.currentTeamId).toBeNull()
+      const a = await h.signedIn('ada@acme.test')
+      expect(await h.auth.teams.list(a.req)).toEqual([])
+      const team = await h.auth.teams.create(a.req, { name: 'Acme', slug: 'acme' })
+      expect(team).toMatchObject({ name: 'Acme', slug: 'acme', role: 'admin' })
+      const again = await rejectsWith(
+        () => h.auth.teams.create(a.req, { name: 'Other', slug: 'acme' }),
+        'validation_failed',
+      )
+      expect((again as unknown as AuthError).issues[0]).toMatchObject({
+        field: 'slug',
+        code: 'taken',
+      })
+      for (const slug of ['Acme', '-x', 'a b', 7, 'x'.repeat(64)])
+        await rejectsWith(
+          () => h.auth.teams.create(a.req, { name: 'Bad', slug }),
+          'validation_failed',
+        )
+      expect((await h.auth.teams.create(a.req, { name: 'No slug' })).slug).toBeNull()
+      expect((await h.store.findTeamBySlug('acme'))?.id).toBe(team.id)
+      const withPersonal = harness({ store, config: { features: { teams: true } } })
+      expect((await withPersonal.user('bob@acme.test')).currentTeamId).not.toBeNull()
+    },
+  )
+})

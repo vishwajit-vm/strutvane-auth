@@ -136,6 +136,7 @@ const toToken = (r: Row): TokenRecord => ({
 const toTeam = (r: Row): TeamRecord => ({
   id: str(r, 'id'),
   name: str(r, 'name'),
+  slug: strOrNull(r, 'slug'),
   personal: num(r, 'personal') === 1,
   createdAt: num(r, 'created_at'),
 })
@@ -454,24 +455,33 @@ export function sqliteAuthStore(db: DatabaseSync): AuthStore {
     },
 
     async createTeam(team, owner) {
+      let created = false
       tx(() => {
-        run(
-          'INSERT INTO teams (id, name, personal, created_at) VALUES (?, ?, ?, ?)',
-          team.id,
-          team.name,
-          team.personal ? 1 : 0,
-          team.createdAt,
-        )
-        run(
-          'INSERT INTO team_members (team_id, user_id, role) VALUES (?, ?, ?)',
-          owner.teamId,
-          owner.userId,
-          owner.role,
-        )
+        created =
+          run(
+            'INSERT INTO teams (id, name, slug, personal, created_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING',
+            team.id,
+            team.name,
+            team.slug,
+            team.personal ? 1 : 0,
+            team.createdAt,
+          ) === 1
+        if (created)
+          run(
+            'INSERT INTO team_members (team_id, user_id, role) VALUES (?, ?, ?)',
+            owner.teamId,
+            owner.userId,
+            owner.role,
+          )
       })
+      return created
     },
     async findTeam(id) {
       const row = get('SELECT * FROM teams WHERE id = ?', id)
+      return row ? toTeam(row) : undefined
+    },
+    async findTeamBySlug(slug) {
+      const row = get('SELECT * FROM teams WHERE slug = ?', slug)
       return row ? toTeam(row) : undefined
     },
     async findMember(teamId, userId) {

@@ -135,6 +135,11 @@ export interface TokenRecord {
 export interface TeamRecord {
   readonly id: string
   readonly name: string
+  /**
+   * URL-safe unique handle (`acme`), used to pick the team from a subdomain (installer question
+   * 12) and by seeders. `null` for personal teams and teams created without one.
+   */
+  readonly slug: string | null
   readonly personal: boolean
   readonly createdAt: number
 }
@@ -232,9 +237,14 @@ export interface AuthStore {
   deleteUserTokens(userId: string): Promise<number>
 
   // Teams
-  /** Create a team and its first member in one transaction. */
-  createTeam(team: TeamRecord, owner: MemberRecord): Promise<void>
+  /**
+   * Create a team and its first member in one transaction. Resolves `false` (and writes nothing)
+   * when the slug is already taken (unique index).
+   */
+  createTeam(team: TeamRecord, owner: MemberRecord): Promise<boolean>
   findTeam(id: string): Promise<TeamRecord | undefined>
+  /** The team with this slug (compared byte for byte; slugs are stored lowercase). */
+  findTeamBySlug(slug: string): Promise<TeamRecord | undefined>
   findMember(teamId: string, userId: string): Promise<MemberRecord | undefined>
   listMembers(teamId: string): Promise<readonly MemberRecord[]>
   listUserTeams(userId: string): Promise<readonly MemberRecord[]>

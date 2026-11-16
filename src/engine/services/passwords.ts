@@ -189,7 +189,8 @@ export function passwordService(deps: AuthDeps): PasswordService {
         // Bind the registration to this browser (#122); a taken address gets the same cookie.
         await bindRegistration(deps, req, created)
         if (created) {
-          if (deps.config.features.teams) await createPersonalTeam(deps, req, created)
+          if (deps.config.features.teams && deps.config.teams.personal)
+            await createPersonalTeam(deps, req, created)
           await emit(deps, req, { type: 'registered', userId: created.id })
           sendMail(deps, {
             kind: 'verify-email',
@@ -209,7 +210,8 @@ export function passwordService(deps: AuthDeps): PasswordService {
       // reported (the documented, rate-limited enumeration of apps that skip verification).
       if (!created)
         throw new AuthError('email_taken', { issues: [{ field: 'email', code: 'taken' }] })
-      if (deps.config.features.teams) await createPersonalTeam(deps, req, created)
+      if (deps.config.features.teams && deps.config.teams.personal)
+        await createPersonalTeam(deps, req, created)
       await emit(deps, req, { type: 'registered', userId: created.id })
       await startSession(deps, req, {
         userId: created.id,

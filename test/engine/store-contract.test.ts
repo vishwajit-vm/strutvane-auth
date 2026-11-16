@@ -109,10 +109,36 @@ describe.each(STORES)('store contract (%s)', (_name, make) => {
     expect(await s.deletePasskey('u1', 'p1')).toBe(true)
   })
 
+  it('team slugs are unique: a taken slug creates nothing and resolves false', async () => {
+    const s = make()
+    const owner = (teamId: string) => ({ teamId, userId: 'u1', role: 'admin' })
+    expect(
+      await s.createTeam(
+        { id: 'a', name: 'A', slug: 'acme', personal: false, createdAt: 1 },
+        owner('a'),
+      ),
+    ).toBe(true)
+    expect(
+      await s.createTeam(
+        { id: 'b', name: 'B', slug: 'acme', personal: false, createdAt: 1 },
+        owner('b'),
+      ),
+    ).toBe(false)
+    expect(await s.findTeam('b')).toBeUndefined()
+    expect(await s.findMember('b', 'u1')).toBeUndefined()
+    expect((await s.findTeamBySlug('acme'))?.id).toBe('a')
+    expect(await s.findTeamBySlug('ACME')).toBeUndefined()
+    // Slug-less teams never collide with each other.
+    for (const id of ['c', 'd'])
+      expect(
+        await s.createTeam({ id, name: id, slug: null, personal: true, createdAt: 1 }, owner(id)),
+      ).toBe(true)
+  })
+
   it('invitations are consumed once', async () => {
     const s = make()
     await s.createTeam(
-      { id: 't', name: 'T', personal: false, createdAt: 1 },
+      { id: 't', name: 'T', slug: null, personal: false, createdAt: 1 },
       { teamId: 't', userId: 'u1', role: 'admin' },
     )
     await s.addInvitation({
@@ -178,7 +204,7 @@ describe('SQLite across connections (several app processes on one database)', ()
     const a = sqliteAuthStore(openFile(file))
     const b = sqliteAuthStore(openFile(file))
     await a.createTeam(
-      { id: 't', name: 'T', personal: false, createdAt: 1 },
+      { id: 't', name: 'T', slug: null, personal: false, createdAt: 1 },
       { teamId: 't', userId: 'u1', role: 'admin' },
     )
     await a.putMember({ teamId: 't', userId: 'u2', role: 'admin' })

@@ -258,7 +258,7 @@ export function createAuth(ports: AuthPorts): Auth {
         })
         if (!created) throw new AuthError('email_taken')
         if (input.roles) await deps.store.setUserRoles(created.id, input.roles)
-        if (deps.config.features.teams) {
+        if (deps.config.features.teams && deps.config.teams.personal) {
           await createPersonalTeam(deps, undefined, created)
           return (await deps.store.findUserById(created.id)) ?? created
         }
