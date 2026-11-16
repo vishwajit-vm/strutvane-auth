@@ -11,7 +11,7 @@
  *
  * @module
  */
-import { type ErrorDefinition, StrutvaneError } from '@strutvane/core'
+import { type ErrorDefinition, StrutvaneError } from '@strutvane/framework/core'
 
 /** Error codes owned by `@strutvane/auth`. Register them with core's error registry at boot. */
 export const AUTH_ERRORS: readonly ErrorDefinition[] = Object.freeze(

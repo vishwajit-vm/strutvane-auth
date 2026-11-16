@@ -32,7 +32,7 @@
  * @module
  */
 
-import type { Actor, Logger } from '@strutvane/contracts'
+import type { Actor, Logger } from '@strutvane/framework/contracts'
 import { betterAuth } from 'better-auth'
 import { getSchema } from 'better-auth/db'
 import { getMigrations } from 'better-auth/db/migration'

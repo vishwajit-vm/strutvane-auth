@@ -5,8 +5,8 @@
  * @module
  */
 import { randomBytes } from 'node:crypto'
-import type { Actor, TenantContext } from '@strutvane/contracts'
-import { runWithContext } from '@strutvane/core'
+import type { Actor, TenantContext } from '@strutvane/framework/contracts'
+import { runWithContext } from '@strutvane/framework/core'
 import { attachRequestMeta } from '../http/request-meta.ts'
 import type { PasswordResetDelivery } from '../identity/engine.ts'
 

@@ -7,7 +7,7 @@
  *
  * @module
  */
-import type { QueryFilter } from '@strutvane/contracts'
+import type { QueryFilter } from '@strutvane/framework/contracts'
 
 /** Always true. */
 export const TRUE: QueryFilter = Object.freeze({ op: 'true' })

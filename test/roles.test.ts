@@ -5,7 +5,7 @@
  * lists filtered in the database exactly as single-record checks decide.
  */
 import { PGlite } from '@electric-sql/pglite'
-import type { Actor, Permission } from '@strutvane/contracts'
+import type { Actor, Permission } from '@strutvane/framework/contracts'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { defineAuthConfig } from '../src/config.ts'
 import { PolicyDefinitionError } from '../src/errors.ts'

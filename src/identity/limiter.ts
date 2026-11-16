@@ -12,7 +12,7 @@
  *
  * @module
  */
-import type { Logger } from '@strutvane/contracts'
+import type { Logger } from '@strutvane/framework/contracts'
 import { rateLimitSubject, resolveClientIp, type TrustedProxies } from '../http/client-ip.ts'
 import {
   accountKey,

@@ -24,7 +24,7 @@
  *
  * @module
  */
-import type { FilterScalar, QueryFilter } from '@strutvane/contracts'
+import type { FilterScalar, QueryFilter } from '@strutvane/framework/contracts'
 import {
   type ColumnType,
   type ModelSchema,

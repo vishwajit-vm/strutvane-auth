@@ -6,8 +6,8 @@
  * (cross-tenant CRUD under RLS) and sql.test.ts (injection into the compiler).
  */
 import { PGlite } from '@electric-sql/pglite'
-import type { QueryFilter } from '@strutvane/contracts'
-import { currentContext } from '@strutvane/core'
+import type { QueryFilter } from '@strutvane/framework/contracts'
+import { currentContext } from '@strutvane/framework/core'
 import { Hono } from 'hono'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { InvalidFilterError } from '../src/errors.ts'

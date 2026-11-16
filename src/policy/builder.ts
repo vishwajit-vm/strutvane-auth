@@ -18,7 +18,12 @@
  *
  * @module
  */
-import type { ActorRef, FilterOperand, FilterScalar, QueryFilter } from '@strutvane/contracts'
+import type {
+  ActorRef,
+  FilterOperand,
+  FilterScalar,
+  QueryFilter,
+} from '@strutvane/framework/contracts'
 import { PolicyDefinitionError } from '../errors.ts'
 import type { ColumnDef, ColumnType, ModelSchema } from './schema.ts'
 

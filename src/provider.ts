@@ -40,7 +40,7 @@
 import { existsSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { type Actor, HTTP_HOOKS, type HttpRequestHookPayload } from '@strutvane/contracts'
+import { type Actor, HTTP_HOOKS, type HttpRequestHookPayload } from '@strutvane/framework/contracts'
 import {
   type Application,
   defineProvider,
@@ -51,7 +51,7 @@ import {
   type Provider,
   StrutvaneError,
   UnauthenticatedError,
-} from '@strutvane/core'
+} from '@strutvane/framework/core'
 import type { AuthConfig } from './config.ts'
 import { AUTH_ERRORS } from './errors.ts'
 import { registerFieldRules } from './field-rules.ts'

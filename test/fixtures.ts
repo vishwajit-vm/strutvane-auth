@@ -1,5 +1,5 @@
 /** Shared test fixtures: an invoice model with a to-one customer relation, and actors. */
-import type { Actor } from '@strutvane/contracts'
+import type { Actor } from '@strutvane/framework/contracts'
 import { definePolicy, type Policy } from '../src/policy/policy.ts'
 import { defineSchema } from '../src/policy/schema.ts'
 

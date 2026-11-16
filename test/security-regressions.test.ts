@@ -6,7 +6,7 @@
  */
 
 import { isIP } from 'node:net'
-import type { Actor, QueryFilter } from '@strutvane/contracts'
+import type { Actor, QueryFilter } from '@strutvane/framework/contracts'
 import fc from 'fast-check'
 import { describe, expect, it } from 'vitest'
 import { diffChanges } from '../src/audit/audit.ts'

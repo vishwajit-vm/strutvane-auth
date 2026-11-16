@@ -23,7 +23,7 @@ import type {
   PermissionProvider,
   QueryFilter,
   ResourceRef,
-} from '@strutvane/contracts'
+} from '@strutvane/framework/contracts'
 import { PolicyDefinitionError } from '../errors.ts'
 import { FALSE } from './filter.ts'
 import { definePolicy, type Explanation, type ExtraGrant, type Policy } from './policy.ts'

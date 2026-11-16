@@ -25,8 +25,8 @@ import type {
   FieldDescriptor,
   ResourceDescriptor,
   ResourceManifest,
-} from '@strutvane/contracts'
-import { ForbiddenError, type HookRegistry } from '@strutvane/core'
+} from '@strutvane/framework/contracts'
+import { ForbiddenError, type HookRegistry } from '@strutvane/framework/core'
 import type { Policy } from './policy/policy.ts'
 
 /** The part of the permission provider these rules need. */

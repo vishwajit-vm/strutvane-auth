@@ -24,8 +24,8 @@
  * @module
  */
 import { createHash, randomBytes, scrypt as scryptCallback, timingSafeEqual } from 'node:crypto'
-import type { Actor, Logger } from '@strutvane/contracts'
-import { uuidv7 } from '@strutvane/core'
+import type { Actor, Logger } from '@strutvane/framework/contracts'
+import { uuidv7 } from '@strutvane/framework/core'
 import { type TrustedProxies, trustedProxies } from '../http/client-ip.ts'
 import { isUuid } from '../policy/schema.ts'
 import {

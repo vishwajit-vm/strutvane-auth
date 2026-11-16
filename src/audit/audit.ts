@@ -15,7 +15,7 @@
  *
  * @module
  */
-import type { Actor, AuditEvent, FieldChange } from '@strutvane/contracts'
+import type { Actor, AuditEvent, FieldChange } from '@strutvane/framework/contracts'
 import {
   currentContext,
   DEFAULT_SENSITIVE_KEYS,
@@ -23,7 +23,7 @@ import {
   sensitiveKeyMatcher,
   toLoggable,
   uuidv7,
-} from '@strutvane/core'
+} from '@strutvane/framework/core'
 
 /** Where audit events go. Implementations should write durably and atomically with the change. */
 export interface AuditSink {

@@ -46,7 +46,7 @@
  *
  * @module
  */
-import type { Actor, QueryFilter } from '@strutvane/contracts'
+import type { Actor, QueryFilter } from '@strutvane/framework/contracts'
 import { PolicyDefinitionError } from '../errors.ts'
 import { FALSE } from './filter.ts'
 import type { ExtraGrant, RoleScope } from './policy.ts'

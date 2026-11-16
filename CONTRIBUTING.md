@@ -14,9 +14,9 @@ Thanks for your interest! Strutvane Auth is part of [Strutvane](https://github.c
 - Sign off your commits (Developer Certificate of Origin): `git commit -s`.
 
 ## Development (once code exists)
-Requirements: Node 24+ and pnpm. Docker is optional and for local services only (never committed).
+Requirements: Node 24.3+ and npm 11.19+. Docker is optional and for local services only (never committed).
 
 ```bash
-pnpm install
-pnpm lint && pnpm typecheck && pnpm test
+npm install
+npm run ci
 ```

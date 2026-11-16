@@ -12,7 +12,7 @@
  *
  * @module
  */
-import type { ActorRef, QueryFilter } from '@strutvane/contracts'
+import type { ActorRef, QueryFilter } from '@strutvane/framework/contracts'
 import { InvalidFilterError } from '../errors.ts'
 import { isActorRef } from './bind.ts'
 import { type ColumnType, fitsType, isNumeric, type ModelSchema, resolveField } from './schema.ts'

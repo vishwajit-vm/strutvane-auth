@@ -30,7 +30,7 @@ import type {
   FilterOperand,
   FilterScalar,
   QueryFilter,
-} from '@strutvane/contracts'
+} from '@strutvane/framework/contracts'
 import { FALSE, TRUE } from './filter.ts'
 
 /** An actor attribute a policy references is missing, or has a value a policy cannot use. A server-side bug (500), never a client error. */

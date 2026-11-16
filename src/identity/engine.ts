@@ -17,7 +17,7 @@
  *
  * @module
  */
-import type { Actor } from '@strutvane/contracts'
+import type { Actor } from '@strutvane/framework/contracts'
 
 /** Stable error codes. Messages are rendered from catalogs by the host, never taken from the engine. */
 export type IdentityErrorCode =

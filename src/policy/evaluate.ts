@@ -8,7 +8,7 @@
  *
  * @module
  */
-import type { FilterScalar, QueryFilter } from '@strutvane/contracts'
+import type { FilterScalar, QueryFilter } from '@strutvane/framework/contracts'
 import { FieldNotLoadedError } from '../errors.ts'
 import { type ColumnType, fitsType, type ModelSchema, resolveField } from './schema.ts'
 import { type FilterLimits, foldAscii, validateFilter } from './validate.ts'

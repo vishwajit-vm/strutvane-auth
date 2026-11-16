@@ -27,7 +27,7 @@
  *
  * @module
  */
-import { type DeepReadonly, defineConfig } from '@strutvane/core'
+import { type DeepReadonly, defineConfig } from '@strutvane/framework/core'
 import type { NewModelDefaults, RoleDefinition } from './policy/roles.ts'
 
 /** Client credentials of one social sign-in provider (values usually come from the env). */

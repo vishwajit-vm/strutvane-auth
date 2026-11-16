@@ -42,7 +42,7 @@
  *
  * @module
  */
-import type { Actor, Decision, QueryFilter } from '@strutvane/contracts'
+import type { Actor, Decision, QueryFilter } from '@strutvane/framework/contracts'
 import { InvalidFilterError, NotListFilterableError, PolicyDefinitionError } from '../errors.ts'
 import { ActorAttributeError, bindActor, resolveActorRef } from './bind.ts'
 import {

@@ -20,7 +20,7 @@
  *
  * @module
  */
-import type { Logger } from '@strutvane/contracts'
+import type { Logger } from '@strutvane/framework/contracts'
 import type { AuthConfig } from '../config.ts'
 import type { IdentityEngine, PasswordResetDelivery } from './engine.ts'
 import { createNativeEngine, type GlobalRoles } from './native.ts'

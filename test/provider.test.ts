@@ -1,4 +1,4 @@
-import type { PermissionProvider } from '@strutvane/contracts'
+import type { PermissionProvider } from '@strutvane/framework/contracts'
 import { describe, expect, expectTypeOf, it } from 'vitest'
 import { PolicyDefinitionError } from '../src/errors.ts'
 import { definePolicy } from '../src/policy/policy.ts'

@@ -1,5 +1,5 @@
 /** Binding, the validation gate and in-memory evaluation: the normative semantics of ADR-0008. */
-import type { QueryFilter } from '@strutvane/contracts'
+import type { QueryFilter } from '@strutvane/framework/contracts'
 import { describe, expect, it } from 'vitest'
 import { FieldNotLoadedError, InvalidFilterError } from '../src/errors.ts'
 import { ActorAttributeError, bindActor, isActorRef, resolveActorRef } from '../src/policy/bind.ts'

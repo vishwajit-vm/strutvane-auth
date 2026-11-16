@@ -4,7 +4,7 @@ import { sharedConfig } from './vitest.shared.ts'
 // The default gate runs everything that needs no Docker: unit tests, PGlite (in-process Postgres)
 // equivalence/RLS tests and the identity contract on the native engine. Container tests (real
 // PostgreSQL 18: pooling, session leaks, owner/superuser bypass, Better Auth) run with
-// `pnpm test:integration` (vitest.integration.config.ts).
+// `npm run test:integration` (vitest.integration.config.ts).
 export default mergeConfig(
   sharedConfig,
   defineConfig({

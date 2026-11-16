@@ -1,4 +1,4 @@
-import { currentContext } from '@strutvane/core'
+import { currentContext } from '@strutvane/framework/core'
 import { describe, expect, it } from 'vitest'
 import { PolicyDefinitionError } from '../src/errors.ts'
 import { createActorRefs, createRow } from '../src/policy/builder.ts'

@@ -1,4 +1,4 @@
-import { runWithContext } from '@strutvane/core'
+import { runWithContext } from '@strutvane/framework/core'
 import { describe, expect, it } from 'vitest'
 import { diffChanges, memoryAuditSink, recordAudit } from '../src/audit/audit.ts'
 import { actor, TENANT_A, TENANT_B } from './fixtures.ts'

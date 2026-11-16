@@ -1,5 +1,5 @@
 /** Type-level tests: misuse of the typed predicate builder must not compile. */
-import type { PermissionProvider, QueryFilter } from '@strutvane/contracts'
+import type { PermissionProvider, QueryFilter } from '@strutvane/framework/contracts'
 import { describe, expectTypeOf, it } from 'vitest'
 import {
   createPermissionProvider,

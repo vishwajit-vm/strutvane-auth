@@ -76,9 +76,15 @@
     "migrations"
   ],
   "engines": {
-    "node": ">=24"
+    "node": ">=24.3"
   },
-  "packageManager": "pnpm@12.18.0",
+  "devEngines": {
+    "packageManager": {
+      "name": "npm",
+      "version": ">=11.19.0",
+      "onFail": "error"
+    }
+  },
   "publishConfig": {
     "access": "public",
     "provenance": true
@@ -94,13 +100,11 @@
     "ci": "biome check . && tsc --noEmit && vitest run --coverage && tsdown",
     "changeset": "changeset",
     "version-packages": "changeset version",
-    "release": "changeset publish"
-  },
-  "dependencies": {
-    "@strutvane/contracts": "0.1.0-next.0",
-    "@strutvane/core": "0.1.0-next.0"
+    "release": "changeset publish",
+    "test:perf": "vitest run --config vitest.perf.config.ts"
   },
   "peerDependencies": {
+    "@strutvane/framework": "^0.1.0-next.1",
     "better-auth": "1.7.23",
     "hono": "^4.13.0",
     "pg": "^8.23.0",
@@ -124,6 +128,7 @@
     "@biomejs/biome": "2.6.7",
     "@changesets/cli": "3.0.3",
     "@electric-sql/pglite": "0.5.16",
+    "@strutvane/framework": "0.1.0-next.1",
     "@types/node": "24.19.2",
     "@types/pg": "8.23.1",
     "@vitest/coverage-v8": "5.1.0",
@@ -135,9 +140,18 @@
     "typescript": "6.0.3",
     "vitest": "5.1.0"
   },
+  "allowScripts": {
+    "esbuild@0.18.20": true,
+    "esbuild@0.25.12": true,
+    "esbuild@0.28.2": true,
+    "fsevents@2.3.3": false
+  },
   "strutvane": {
     "commands": "./dist/commands.mjs",
     "compat": "^0.1.0-next.0",
     "migrations": "./migrations"
+  },
+  "dependencies": {
+    "@simplewebauthn/server": "14.1.0"
   }
 }

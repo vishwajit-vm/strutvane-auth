@@ -21,14 +21,14 @@
  *
  * @module
  */
-import type { Actor, TenantContext, TenantStrategy } from '@strutvane/contracts'
+import type { Actor, TenantContext, TenantStrategy } from '@strutvane/framework/contracts'
 import {
   ForbiddenError,
   runWithContext,
   StrutvaneError,
   toProblem,
   UnauthenticatedError,
-} from '@strutvane/core'
+} from '@strutvane/framework/core'
 import type { IdentityEngine } from '../identity/engine.ts'
 import { resolveTenant, type TenantResolver } from '../tenancy/resolver.ts'
 

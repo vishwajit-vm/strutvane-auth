@@ -13,7 +13,7 @@
  *
  * @module
  */
-import type { Actor, TenantContext } from '@strutvane/contracts'
+import type { Actor, TenantContext } from '@strutvane/framework/contracts'
 import type { Context, MiddlewareHandler } from 'hono'
 import { attachRequestMeta } from '../http/request-meta.ts'
 import { type AuthMiddlewareOptions, authenticateRequest, runWithAuth } from './core.ts'

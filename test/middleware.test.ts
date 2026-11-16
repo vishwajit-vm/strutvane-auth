@@ -1,8 +1,8 @@
 /** The framework-agnostic core plus the Hono and node:http adapters, over real HTTP where it matters. */
 import { createServer, request, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import type { Actor } from '@strutvane/contracts'
-import { currentContext } from '@strutvane/core'
+import type { Actor } from '@strutvane/framework/contracts'
+import { currentContext } from '@strutvane/framework/core'
 import { Hono } from 'hono'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { requestMeta } from '../src/http/request-meta.ts'
@@ -109,7 +109,7 @@ describe('authenticateRequest', () => {
 
   it('problem responses are no-store and carry headers', async () => {
     const r = problemResponse(
-      new (await import('@strutvane/core')).UnauthenticatedError(),
+      new (await import('@strutvane/framework/core')).UnauthenticatedError(),
       new Headers({ 'set-cookie': 'a=; Max-Age=0' }),
     )
     expect(r.headers.get('cache-control')).toBe('no-store')

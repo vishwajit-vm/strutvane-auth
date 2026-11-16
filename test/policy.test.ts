@@ -1,4 +1,4 @@
-import type { QueryFilter } from '@strutvane/contracts'
+import type { QueryFilter } from '@strutvane/framework/contracts'
 import { describe, expect, it } from 'vitest'
 import {
   FieldNotLoadedError,

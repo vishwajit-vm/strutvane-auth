@@ -7,7 +7,7 @@
  * the design exists to prevent) must be caught.
  */
 import { PGlite } from '@electric-sql/pglite'
-import type { Actor, QueryFilter } from '@strutvane/contracts'
+import type { Actor, QueryFilter } from '@strutvane/framework/contracts'
 import fc from 'fast-check'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { evaluateFilter } from '../src/policy/evaluate.ts'

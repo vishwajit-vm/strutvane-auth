@@ -15,7 +15,7 @@
  *
  * @module
  */
-import type { Actor, TenantContext, TenantStrategy } from '@strutvane/contracts'
+import type { Actor, TenantContext, TenantStrategy } from '@strutvane/framework/contracts'
 import { isUuid } from '../policy/schema.ts'
 
 /** What a resolver receives. */

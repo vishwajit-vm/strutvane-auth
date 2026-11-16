@@ -1,5 +1,5 @@
 /** The SQL compiler's output shape, parameterisation and injection resistance. */
-import type { QueryFilter } from '@strutvane/contracts'
+import type { QueryFilter } from '@strutvane/framework/contracts'
 import { describe, expect, it } from 'vitest'
 import { InvalidFilterError, PolicyDefinitionError } from '../src/errors.ts'
 import { compileToSql, compileToTokens, renderPostgres } from '../src/sql/index.ts'
