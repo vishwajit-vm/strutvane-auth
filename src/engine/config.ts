@@ -1,0 +1,378 @@
+/**
+ * `config/auth.ts`: feature switches and tunables, with secure defaults.
+ *
+ * The `features` block mirrors the installer's sign-in questions (blueprint §2.1, questions 5–12)
+ * and Fortify's features array. A feature that is off has NO routes and its service methods throw
+ * `NOT_FOUND`, so it is indistinguishable from a feature that never existed (404, never 403).
+ *
+ * Defaults follow the security review: public registration is OFF (F-02), sign-in by email and
+ * password is on, everything optional is off until the installer (or the developer) turns it on.
+ *
+ * @module
+ */
+
+/** The switches. Each maps to installer answers; unknown keys are compile errors. */
+export interface AuthFeatures {
+  /** Email + password sign-in (question 5). Password reset is part of it, as in Fortify. */
+  readonly passwordLogin: boolean
+  /** Public sign-up (question 6). Off by default: B2B apps are invite-only (review F-02). */
+  readonly registration: boolean
+  /** Signed email-verification links (question 6). */
+  readonly emailVerification: boolean
+  /** Passwordless email links (question 5, "email link only"). */
+  readonly emailLink: boolean
+  /** TOTP two-factor with recovery codes (question 6). */
+  readonly twoFactor: boolean
+  /** Passkeys (WebAuthn), as a first factor and as a second factor (question 6). */
+  readonly passkeys: boolean
+  /** Personal access tokens (question 9). */
+  readonly tokens: boolean
+  /** Teams (question 11). */
+  readonly teams: boolean
+  /** Admin impersonation. */
+  readonly impersonation: boolean
+}
+
+/** The starting role presets (question 10). Role NAMES live in code; only assignments are rows. */
+export const ROLE_PRESETS = {
+  'admin-member': ['admin', 'member'],
+  'admin-manager-member-viewer': ['admin', 'manager', 'member', 'viewer'],
+} as const
+
+/** A preset name for {@link ROLE_PRESETS}. */
+export type RolePreset = keyof typeof ROLE_PRESETS
+
+/** One rate limit: at most `max` hits per sliding `windowSeconds`. */
+export interface RateRule {
+  readonly max: number
+  readonly windowSeconds: number
+}
+
+/** WebAuthn relying-party settings. */
+export interface PasskeyConfig {
+  /** The registrable domain, e.g. `example.com` (or `localhost` in development). */
+  readonly rpId: string
+  /** Shown by the browser's passkey prompt. */
+  readonly rpName: string
+  /** Exact origins allowed to answer a ceremony, e.g. `['https://app.example.com']`. */
+  readonly origins: readonly string[]
+}
+
+/** Everything {@link defineAuthConfig} accepts. Every key except `appUrl` is optional. */
+export interface AuthConfigInput {
+  /** The public base URL; links are built on it and `https` turns on `__Host-` cookies. */
+  readonly appUrl: string
+  readonly features?: Partial<AuthFeatures>
+  readonly passwords?: {
+    /** Minimum length (default 12; Laravel's is 8, v1's non-regression list keeps 12). */
+    readonly min?: number
+    readonly max?: number
+  }
+  readonly sessions?: {
+    /** Idle timeout (default 120 minutes, Laravel's session lifetime). */
+    readonly idleMinutes?: number
+    /** Absolute lifetime of a normal session (default 12 hours). */
+    readonly absoluteHours?: number
+    /** Absolute and idle lifetime of a "remember me" session (default 30 days). */
+    readonly rememberDays?: number
+    /** The password-confirmation window (default 3 hours, Laravel's `password_timeout`). */
+    readonly confirmPasswordMinutes?: number
+    /** How long a half-done 2FA sign-in waits for the second factor (default 10 minutes). */
+    readonly twoFactorPendingMinutes?: number
+  }
+  readonly links?: {
+    readonly passwordResetMinutes?: number
+    readonly emailLinkMinutes?: number
+    readonly verificationMinutes?: number
+    readonly invitationDays?: number
+  }
+  readonly twoFactor?: {
+    /** Recovery codes issued (8–10; default 10). */
+    readonly recoveryCodes?: number
+    /** "Remember this device" lifetime in days (0 turns the option off; default 30). */
+    readonly rememberDeviceDays?: number
+    /** Issuer shown in authenticator apps. */
+    readonly issuer?: string
+  }
+  readonly tokens?: {
+    /** Ability patterns a token may be given (`post.view`, `post.*`, `*`). Default `['*']`. */
+    readonly abilities?: readonly string[]
+    /** Default expiry (default 365 days; Sanctum's default is never). */
+    readonly defaultExpiryDays?: number
+    /** Longest expiry a user may pick (default 365 days). */
+    readonly maxExpiryDays?: number
+    /** The prefix secret scanners look for (default `svp_`). */
+    readonly prefix?: string
+  }
+  readonly roles?: RolePreset
+  readonly passkeys?: PasskeyConfig
+  readonly limits?: Partial<RateLimits>
+  readonly lockout?: {
+    /** Consecutive failures before a lockout (default 5). */
+    readonly threshold?: number
+    /** First lockout length (default 60 s); it doubles per further failure. */
+    readonly baseSeconds?: number
+    /** Longest lockout (default 1 hour). */
+    readonly maxSeconds?: number
+  }
+}
+
+/** The rate limits, all sliding windows (review F-22). */
+export interface RateLimits {
+  readonly loginPerIp: RateRule
+  readonly loginPerAccount: RateRule
+  readonly registerPerIp: RateRule
+  readonly resetPerIp: RateRule
+  readonly resetPerAccount: RateRule
+  readonly emailLinkPerIp: RateRule
+  readonly emailLinkPerAccount: RateRule
+  readonly verificationResendPerAccount: RateRule
+  readonly verificationResendCooldown: RateRule
+  readonly twoFactorPerAccount: RateRule
+  readonly passkeyPerIp: RateRule
+  readonly confirmPasswordPerAccount: RateRule
+  /** Team invitations sent by one account (every user admins a personal team: mail-bomb guard). */
+  readonly invitePerAccount: RateRule
+}
+
+/** The resolved configuration every service reads. */
+export interface AuthConfig {
+  readonly appUrl: string
+  readonly secureCookies: boolean
+  readonly features: AuthFeatures
+  readonly passwords: { readonly min: number; readonly max: number }
+  readonly sessions: {
+    readonly idleMs: number
+    readonly absoluteMs: number
+    readonly rememberMs: number
+    readonly confirmPasswordMs: number
+    readonly twoFactorPendingMs: number
+  }
+  readonly links: {
+    readonly passwordResetMs: number
+    readonly emailLinkMs: number
+    readonly verificationMs: number
+    readonly invitationMs: number
+  }
+  readonly twoFactor: {
+    readonly recoveryCodes: number
+    readonly rememberDeviceMs: number
+    readonly issuer: string
+  }
+  readonly tokens: {
+    readonly abilities: readonly string[]
+    readonly defaultExpiryMs: number
+    readonly maxExpiryMs: number
+    readonly prefix: string
+  }
+  readonly roles: readonly string[]
+  readonly passkeys: PasskeyConfig | undefined
+  readonly limits: RateLimits
+  readonly lockout: { readonly threshold: number; readonly baseMs: number; readonly maxMs: number }
+}
+
+/** Defaults for {@link AuthFeatures}. */
+export const DEFAULT_FEATURES: AuthFeatures = Object.freeze({
+  passwordLogin: true,
+  registration: false,
+  emailVerification: false,
+  emailLink: false,
+  twoFactor: false,
+  passkeys: false,
+  tokens: false,
+  teams: false,
+  impersonation: false,
+})
+
+/** Defaults for {@link RateLimits} (v1's values, plus the new flows). */
+export const DEFAULT_LIMITS: RateLimits = Object.freeze({
+  loginPerIp: { max: 10, windowSeconds: 60 },
+  loginPerAccount: { max: 20, windowSeconds: 900 },
+  registerPerIp: { max: 10, windowSeconds: 3600 },
+  resetPerIp: { max: 5, windowSeconds: 900 },
+  resetPerAccount: { max: 3, windowSeconds: 900 },
+  emailLinkPerIp: { max: 5, windowSeconds: 900 },
+  emailLinkPerAccount: { max: 3, windowSeconds: 900 },
+  verificationResendPerAccount: { max: 6, windowSeconds: 3600 },
+  verificationResendCooldown: { max: 1, windowSeconds: 60 },
+  // Looser than the lockout (5 failures) on purpose: the lockout is the real bound; this caps the rate.
+  twoFactorPerAccount: { max: 10, windowSeconds: 300 },
+  passkeyPerIp: { max: 20, windowSeconds: 60 },
+  confirmPasswordPerAccount: { max: 5, windowSeconds: 300 },
+  invitePerAccount: { max: 20, windowSeconds: 3600 },
+})
+
+const MINUTE = 60_000
+const ABILITY = /^(\*|[a-z][a-zA-Z0-9-]*(\.([a-z][a-zA-Z0-9-]*|\*))*)$/
+
+const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]'])
+
+/** Local development: loopback or a `*.localhost` name (which browsers resolve to loopback). */
+function isLocalHost(hostname: string): boolean {
+  return LOCAL_HOSTS.has(hostname) || hostname.endsWith('.localhost')
+}
+
+/**
+ * Check the WebAuthn relying party at boot. The library compares origins exactly, but a wrong
+ * list fails OPEN in ways it cannot see: a foreign origin (`https://evil.test`) or a plain-http
+ * origin would let that site answer ceremonies for this rpId. Each origin must be an exact http(s)
+ * origin (no path, no wildcard), https unless it is localhost, and its host must be the rpId or a
+ * subdomain of it (the browser rule).
+ */
+function checkPasskeys(config: PasskeyConfig): PasskeyConfig {
+  const fail = (why: string): never => {
+    throw new TypeError(`auth config: passkeys ${why}`)
+  }
+  const rpId = config.rpId
+  if (
+    typeof rpId !== 'string' ||
+    !/^[a-z0-9.-]+$/.test(rpId) ||
+    rpId.startsWith('.') ||
+    rpId.endsWith('.')
+  )
+    fail('rpId must be a bare lowercase host name, e.g. `example.com`')
+  if (!Array.isArray(config.origins) || config.origins.length === 0)
+    fail('origins must list at least one origin')
+  for (const origin of config.origins) {
+    let url: URL | undefined
+    try {
+      url = new URL(origin)
+    } catch {
+      url = undefined
+    }
+    if (!url || url.origin !== origin)
+      fail(`origin ${JSON.stringify(origin)} must be an exact origin like https://app.example.com`)
+    else {
+      if (url.protocol !== 'https:' && !(url.protocol === 'http:' && LOCAL_HOSTS.has(url.hostname)))
+        fail(`origin ${JSON.stringify(origin)} must use https (http only on localhost)`)
+      if (url.hostname !== rpId && !url.hostname.endsWith(`.${rpId}`))
+        fail(`origin ${JSON.stringify(origin)} is not ${rpId} or a subdomain of it`)
+    }
+  }
+  return Object.freeze({ ...config, origins: Object.freeze([...config.origins]) })
+}
+
+function positive(name: string, value: number): number {
+  if (!Number.isFinite(value) || value <= 0)
+    throw new RangeError(`auth config: ${name} must be a positive number`)
+  return value
+}
+
+/**
+ * Resolve `config/auth.ts` with defaults, failing at boot on nonsense (fail closed).
+ *
+ * @example
+ * ```ts
+ * // config/auth.ts
+ * export default defineAuthConfig({
+ *   appUrl: env.APP_URL,
+ *   features: { twoFactor: true, emailVerification: true, passkeys: true },
+ *   passkeys: { rpId: 'example.com', rpName: 'Acme', origins: ['https://example.com'] },
+ * })
+ * ```
+ */
+export function defineAuthConfig(input: AuthConfigInput): AuthConfig {
+  const url = new URL(input.appUrl)
+  // Every mailed link is built on appUrl; `javascript:`/`file:` URLs have origin "null".
+  if (url.protocol !== 'https:' && url.protocol !== 'http:')
+    throw new TypeError('auth config: appUrl must be an http(s) URL')
+  const features: AuthFeatures = { ...DEFAULT_FEATURES, ...input.features }
+  // An email link only signs in the browser holding its nonce cookie. Over plain http that cookie
+  // is neither `__Host-` nor Secure, so anyone on the path (or a sibling host) can plant their own
+  // nonce and log the victim into the attacker's account (CONSISTENCY #117). HTTPS outside local.
+  if (features.emailLink && url.protocol !== 'https:' && !isLocalHost(url.hostname))
+    throw new TypeError(
+      'auth config: features.emailLink needs an https appUrl outside local development',
+    )
+  if (features.passkeys && input.passkeys === undefined)
+    throw new TypeError(
+      'auth config: features.passkeys needs a `passkeys: { rpId, rpName, origins }` block',
+    )
+  if (features.impersonation && !features.passwordLogin && !features.passkeys)
+    throw new TypeError(
+      'auth config: impersonation needs passwordLogin or passkeys (admins must confirm first)',
+    )
+  const min = input.passwords?.min ?? 12
+  const max = input.passwords?.max ?? 256
+  if (min < 8 || max < min)
+    throw new RangeError('auth config: passwords.min must be at least 8 and at most max')
+  const recoveryCodes = input.twoFactor?.recoveryCodes ?? 10
+  if (!Number.isInteger(recoveryCodes) || recoveryCodes < 8 || recoveryCodes > 10)
+    throw new RangeError('auth config: twoFactor.recoveryCodes must be 8, 9 or 10')
+  const abilities = input.tokens?.abilities ?? ['*']
+  for (const a of abilities)
+    if (!ABILITY.test(a))
+      throw new TypeError(`auth config: invalid token ability ${JSON.stringify(a)}`)
+  const limits: RateLimits = { ...DEFAULT_LIMITS, ...input.limits }
+  for (const [name, rule] of Object.entries(limits)) {
+    if (!Number.isInteger(rule.max) || rule.max < 1)
+      throw new RangeError(`auth config: limits.${name}.max must be a positive integer`)
+    positive(`limits.${name}.windowSeconds`, rule.windowSeconds)
+  }
+  // A threshold of NaN or Infinity silently switched the lockout off; 0 or a fraction is nonsense.
+  const threshold = input.lockout?.threshold ?? 5
+  if (!Number.isInteger(threshold) || threshold < 1)
+    throw new RangeError('auth config: lockout.threshold must be a positive integer')
+  const lockoutBaseMs = positive('lockout.baseSeconds', input.lockout?.baseSeconds ?? 60) * 1000
+  const lockoutMaxMs = positive('lockout.maxSeconds', input.lockout?.maxSeconds ?? 3600) * 1000
+  if (lockoutMaxMs < lockoutBaseMs)
+    throw new RangeError('auth config: lockout.maxSeconds must be at least lockout.baseSeconds')
+  const prefix = input.tokens?.prefix ?? 'svp_'
+  if (!/^[a-z]{2,8}_$/.test(prefix))
+    throw new TypeError('auth config: tokens.prefix must look like `abc_`')
+  return Object.freeze({
+    appUrl: url.origin,
+    secureCookies: url.protocol === 'https:',
+    features: Object.freeze(features),
+    passwords: { min, max },
+    sessions: {
+      idleMs: positive('sessions.idleMinutes', input.sessions?.idleMinutes ?? 120) * MINUTE,
+      absoluteMs:
+        positive('sessions.absoluteHours', input.sessions?.absoluteHours ?? 12) * 60 * MINUTE,
+      rememberMs:
+        positive('sessions.rememberDays', input.sessions?.rememberDays ?? 30) * 24 * 60 * MINUTE,
+      confirmPasswordMs:
+        positive('sessions.confirmPasswordMinutes', input.sessions?.confirmPasswordMinutes ?? 180) *
+        MINUTE,
+      twoFactorPendingMs:
+        positive(
+          'sessions.twoFactorPendingMinutes',
+          input.sessions?.twoFactorPendingMinutes ?? 10,
+        ) * MINUTE,
+    },
+    links: {
+      passwordResetMs:
+        positive('links.passwordResetMinutes', input.links?.passwordResetMinutes ?? 60) * MINUTE,
+      emailLinkMs: positive('links.emailLinkMinutes', input.links?.emailLinkMinutes ?? 15) * MINUTE,
+      verificationMs:
+        positive('links.verificationMinutes', input.links?.verificationMinutes ?? 60) * MINUTE,
+      invitationMs:
+        positive('links.invitationDays', input.links?.invitationDays ?? 7) * 24 * 60 * MINUTE,
+    },
+    twoFactor: {
+      recoveryCodes,
+      rememberDeviceMs: (input.twoFactor?.rememberDeviceDays ?? 30) * 24 * 60 * MINUTE,
+      issuer: input.twoFactor?.issuer ?? url.hostname,
+    },
+    tokens: {
+      abilities: Object.freeze([...abilities]),
+      defaultExpiryMs:
+        positive('tokens.defaultExpiryDays', input.tokens?.defaultExpiryDays ?? 365) *
+        24 *
+        60 *
+        MINUTE,
+      maxExpiryMs:
+        positive('tokens.maxExpiryDays', input.tokens?.maxExpiryDays ?? 365) * 24 * 60 * MINUTE,
+      prefix,
+    },
+    roles: Object.freeze([...ROLE_PRESETS[input.roles ?? 'admin-member']]),
+    passkeys: input.passkeys === undefined ? undefined : checkPasskeys(input.passkeys),
+    limits: Object.freeze(limits),
+    lockout: { threshold, baseMs: lockoutBaseMs, maxMs: lockoutMaxMs },
+  })
+}
+
+/** True when `ability` is a well-formed ability pattern. */
+export function isAbility(ability: string): boolean {
+  return ABILITY.test(ability)
+}
