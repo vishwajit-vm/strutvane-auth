@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { APP_KEY, Browser, harness, PASSWORD, rejectsWith, STORES } from './helpers/harness.ts'
 
-const config = { features: { impersonation: true, tokens: true, twoFactor: true } }
+const config = { features: { impersonation: true, apiTokens: true, twoFactor: true } }
 
 async function setup(store: (typeof STORES)[number]) {
   const h = harness({ store, config })
@@ -17,7 +17,7 @@ describe.each(STORES)('impersonation (%s store)', (store) => {
     const { h, admin, member, browser } = await setup(store)
     await rejectsWith(
       () => h.auth.impersonation.start(browser.req, { userId: member.id }),
-      'PASSWORD_CONFIRMATION_REQUIRED',
+      'password_confirmation_required',
     )
     await h.auth.passwords.confirm(browser.req, { password: PASSWORD })
     const adminCookie = browser.get('strutvane_session')
@@ -44,20 +44,20 @@ describe.each(STORES)('impersonation (%s store)', (store) => {
     await h.auth.passwords.confirm(browser.req, { password: PASSWORD })
     await rejectsWith(
       () => h.auth.impersonation.start(browser.req, { userId: otherAdmin.id }),
-      'FORBIDDEN',
+      'forbidden',
     )
     await rejectsWith(
       () => h.auth.impersonation.start(browser.req, { userId: admin.id }),
-      'FORBIDDEN',
+      'forbidden',
     )
     await rejectsWith(
       () =>
         h.auth.impersonation.start(browser.req, { userId: '00000000-0000-4000-8000-000000000000' }),
-      'NOT_FOUND',
+      'not_found',
     )
     await rejectsWith(
       () => h.auth.impersonation.start(browser.req, { userId: { id: otherAdmin.id } }),
-      'NOT_FOUND',
+      'not_found',
     )
     expect(h.eventsOf('impersonation.started')).toHaveLength(0)
   })
@@ -68,10 +68,10 @@ describe.each(STORES)('impersonation (%s store)', (store) => {
     const vic = await h.signedIn(member.email)
     await h.auth.passwords.confirm(vic.req, { password: PASSWORD })
     const eveId = (await h.store.findUserByEmail('eve@acme.test'))?.id
-    await rejectsWith(() => h.auth.impersonation.start(vic.req, { userId: eveId }), 'FORBIDDEN')
+    await rejectsWith(() => h.auth.impersonation.start(vic.req, { userId: eveId }), 'forbidden')
     await h.auth.passwords.confirm(browser.req, { password: PASSWORD })
     await h.auth.impersonation.start(browser.req, { userId: member.id })
-    await rejectsWith(() => h.auth.impersonation.start(browser.req, { userId: eveId }), 'FORBIDDEN')
+    await rejectsWith(() => h.auth.impersonation.start(browser.req, { userId: eveId }), 'forbidden')
   })
 
   it("while impersonating, the user's credentials, factors, tokens and sessions are off-limits", async () => {
@@ -84,15 +84,15 @@ describe.each(STORES)('impersonation (%s store)', (store) => {
           current: PASSWORD,
           password: 'admin picks this one',
         }),
-      'FORBIDDEN',
+      'forbidden',
     )
     await rejectsWith(
       () => h.auth.passwords.confirm(browser.req, { password: PASSWORD }),
-      'FORBIDDEN',
+      'forbidden',
     )
-    await rejectsWith(() => h.auth.tokens.create(browser.req, { name: 'backdoor' }), 'FORBIDDEN')
-    await rejectsWith(() => h.auth.twoFactor.enable(browser.req), 'FORBIDDEN')
-    await rejectsWith(() => h.auth.sessions.revokeOthers(browser.req), 'FORBIDDEN')
+    await rejectsWith(() => h.auth.tokens.create(browser.req, { name: 'backdoor' }), 'forbidden')
+    await rejectsWith(() => h.auth.twoFactor.enable(browser.req), 'forbidden')
+    await rejectsWith(() => h.auth.sessions.revokeOthers(browser.req), 'forbidden')
     expect(await h.store.listTokens(member.id)).toHaveLength(0)
   })
 
@@ -118,13 +118,13 @@ describe.each(STORES)('impersonation (%s store)', (store) => {
     // survive "leave impersonation".
     await rejectsWith(
       () => h.auth.teams.invite(browser.req, { teamId, email: admin.email, role: 'admin' }),
-      'FORBIDDEN',
+      'forbidden',
     )
     await rejectsWith(
       () => h.auth.teams.changeRole(browser.req, { teamId, userId: colleague.id, role: 'admin' }),
-      'FORBIDDEN',
+      'forbidden',
     )
-    await rejectsWith(() => h.auth.teams.accept(browser.req, { token: pendingToken }), 'FORBIDDEN')
+    await rejectsWith(() => h.auth.teams.accept(browser.req, { token: pendingToken }), 'forbidden')
     expect((await h.store.listInvitations(teamId)).map((i) => i.email)).toEqual(['later@acme.test'])
     expect((await h.store.findMember(teamId, colleague.id))?.role).toBe('member')
     // Reading is still fine: support can look.
@@ -227,7 +227,7 @@ describe.each(STORES)('impersonation (%s store)', (store) => {
     const { h, member, browser } = await setup(store)
     await h.auth.passwords.confirm(browser.req, { password: PASSWORD })
     await h.auth.impersonation.start(browser.req, { userId: member.id })
-    const off = harness({ store, config: { features: { tokens: true, twoFactor: true } } })
+    const off = harness({ store, config: { features: { apiTokens: true, twoFactor: true } } })
     // Same store and keys, feature switched off at the next boot.
     const rebooted = await import('../../src/engine/auth.ts').then(({ createAuth }) =>
       createAuth({
@@ -245,14 +245,14 @@ describe.each(STORES)('impersonation (%s store)', (store) => {
       await rebooted.passwords
         .change(browser.req, { current: PASSWORD, password: 'admin picks this one' })
         .catch((e: { code?: string }) => e.code),
-    ).toBe('UNAUTHENTICATED')
+    ).toBe('unauthenticated')
   })
 
-  it('feature off: start and stop are NOT_FOUND even for admins', async () => {
+  it('feature off: start and stop are not_found even for admins', async () => {
     const h = harness({ store })
     const admin = await h.user('root@acme.test', { roles: ['admin'] })
     const b = await h.signedIn(admin.email)
-    await rejectsWith(() => h.auth.impersonation.start(b.req, { userId: admin.id }), 'NOT_FOUND')
-    await rejectsWith(() => h.auth.impersonation.stop(b.req), 'NOT_FOUND')
+    await rejectsWith(() => h.auth.impersonation.start(b.req, { userId: admin.id }), 'not_found')
+    await rejectsWith(() => h.auth.impersonation.stop(b.req), 'not_found')
   })
 })

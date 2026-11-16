@@ -23,7 +23,7 @@ import { assertPasswordAllowed } from '../password/rules.ts'
 import type { AuthRequest } from '../ports/cookies.ts'
 import { parseSecret } from '../tokens/formats.ts'
 
-/** Password reset operations (part of the `passwordLogin` feature). */
+/** Password reset operations (part of the `passwordReset` feature, which follows `password`). */
 export interface PasswordResetService {
   /**
    * Mail a reset link if the account exists. Always resolves `{ status: 'sent' }`.
@@ -56,15 +56,15 @@ export function passwordResetService(deps: AuthDeps): PasswordResetService {
   const { limits } = deps.config
   return {
     async request(req, input) {
-      requireFeature(deps, 'passwordLogin')
+      requireFeature(deps, 'passwordReset')
       const email = parseEmail(input.email)
       if (email === undefined)
-        throw new AuthError('VALIDATION_FAILED', { issues: [{ field: 'email', code: 'invalid' }] })
+        throw new AuthError('validation_failed', { issues: [{ field: 'email', code: 'invalid' }] })
       const retry = await deps.limiter.hit([
         [`reset:ip:${rateLimitSubject(req.ip)}`, limits.resetPerIp],
         [`reset:acct:${accountKey(deps, email)}`, limits.resetPerAccount],
       ])
-      if (retry !== undefined) throw new AuthError('RATE_LIMITED', { retryAfterSeconds: retry })
+      if (retry !== undefined) throw new AuthError('rate_limited', { retryAfterSeconds: retry })
       const user = await deps.store.findUserByEmail(email)
       if (user) {
         const token = randomSecret()
@@ -88,17 +88,17 @@ export function passwordResetService(deps: AuthDeps): PasswordResetService {
     },
 
     async reset(req, input) {
-      requireFeature(deps, 'passwordLogin')
+      requireFeature(deps, 'passwordReset')
       const retry = await deps.limiter.hit([
         [`reset-complete:ip:${rateLimitSubject(req.ip)}`, limits.resetPerIp],
       ])
-      if (retry !== undefined) throw new AuthError('RATE_LIMITED', { retryAfterSeconds: retry })
+      if (retry !== undefined) throw new AuthError('rate_limited', { retryAfterSeconds: retry })
       const token = parseSecret(input.token)
-      if (token === undefined) throw new AuthError('INVALID_TOKEN')
+      if (token === undefined) throw new AuthError('invalid_token')
       const digest = deps.keys.digest('password-reset', token)
       const found = await deps.store.findOneTime(digest, 'password-reset')
       if (!found || found.expiresAt <= deps.clock.now() || found.userId === null)
-        throw new AuthError('INVALID_TOKEN')
+        throw new AuthError('invalid_token')
       // Validate the new password BEFORE consuming, so a too-short password does not burn the link.
       const password = await assertPasswordAllowed(input.password, {
         min: deps.config.passwords.min,
@@ -113,9 +113,9 @@ export function passwordResetService(deps: AuthDeps): PasswordResetService {
       // Re-check the expiry AT the consume: hashing and the breach check ran since the lookup, and
       // the link may have expired meanwhile (consumed either way, so it cannot be retried).
       if (!consumed || consumed.userId === null || consumed.expiresAt <= deps.clock.now())
-        throw new AuthError('INVALID_TOKEN')
+        throw new AuthError('invalid_token')
       const user = await deps.store.findUserById(consumed.userId)
-      if (!user) throw new AuthError('INVALID_TOKEN')
+      if (!user) throw new AuthError('invalid_token')
       // Revoke FIRST, set the password LAST: the store has no transactions, so if it fails
       // part-way the account is left with the old password and fewer credentials (fail closed),
       // never with the new password while a thief's sessions or tokens survive.

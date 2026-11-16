@@ -175,7 +175,7 @@ export async function proveMailbox(
     await emit(deps, req, { type: 'session.revoked', userId: user.id, count: sessions })
   await emit(deps, req, { type: 'email.verified', userId: user.id })
   let setPasswordToken: string | undefined
-  if (hadPassword && deps.config.features.passwordLogin) {
+  if (hadPassword && deps.config.features.password) {
     setPasswordToken = randomSecret()
     await deps.store.putOneTime({
       digest: deps.keys.digest('password-reset', setPasswordToken),
@@ -224,7 +224,7 @@ export interface VerificationService {
       readonly signature: unknown
     },
   ): Promise<VerifyResult>
-  /** Throw `EMAIL_NOT_VERIFIED` when verification is on and `user` has not verified (the `verified` guard). */
+  /** Throw `email_not_verified` when verification is on and `user` has not verified (the `verified` guard). */
   assertVerified(user: UserRecord): void
 }
 
@@ -237,20 +237,25 @@ export function verificationService(deps: AuthDeps): VerificationService {
       if (user.emailVerifiedAt !== null) return { status: 'already-verified' }
       // A cooldown between sends (only a successful send starts it), then an hourly cap.
       const retry = await mailVerificationLink(deps, user)
-      if (retry !== undefined) throw new AuthError('RATE_LIMITED', { retryAfterSeconds: retry })
+      if (retry !== undefined) throw new AuthError('rate_limited', { retryAfterSeconds: retry })
       return { status: 'sent' }
     },
 
     async verify(req, parts) {
       requireFeature(deps, 'emailVerification')
       const link = parseVerificationLink(parts)
-      if (!link) throw new AuthError('INVALID_TOKEN')
+      // Signed-link answers are the framework's (CONSISTENCY #67): 403 `invalid_signature` for a
+      // malformed, edited or no-longer-matching link, 403 `signature_expired` for an intact link
+      // past its time. The signature is checked first, so an edited expiry is never "expired".
+      if (!link) throw new AuthError('invalid_signature')
       if (!safeEqual(link.signature, sign(deps, link.id, link.hash, link.expires)))
-        throw new AuthError('INVALID_TOKEN')
-      if (link.expires * 1000 <= deps.clock.now()) throw new AuthError('INVALID_TOKEN')
+        throw new AuthError('invalid_signature')
+      if (link.expires * 1000 <= deps.clock.now()) throw new AuthError('signature_expired')
       const user = await deps.store.findUserById(link.id)
+      // A genuine link for an address the user has since changed (or a deleted user) is not valid
+      // any more; it reads like any other invalid link, so it reveals nothing about the account.
       if (!user || !safeEqual(link.hash, emailHash(deps, user.email)))
-        throw new AuthError('INVALID_TOKEN')
+        throw new AuthError('invalid_signature')
       if (user.emailVerifiedAt !== null) return { status: 'verified' }
       const proof = await proveMailbox(deps, req, user, {
         sameBrowser: await sameRegisteringBrowser(deps, req, user),
@@ -262,7 +267,7 @@ export function verificationService(deps: AuthDeps): VerificationService {
 
     assertVerified(user) {
       if (deps.config.features.emailVerification && user.emailVerifiedAt === null)
-        throw new AuthError('EMAIL_NOT_VERIFIED')
+        throw new AuthError('email_not_verified')
     },
   }
 }

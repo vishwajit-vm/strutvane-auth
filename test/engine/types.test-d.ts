@@ -95,7 +95,7 @@ export function resultNarrowing(result: SignInResult): number {
 }
 
 export function errorCodes(): void {
-  const code: AuthErrorCode = 'RATE_LIMITED'
+  const code: AuthErrorCode = 'rate_limited'
   new AuthError(code)
   // @ts-expect-error error codes are a closed, stable set
   new AuthError('SOMETHING_ELSE')

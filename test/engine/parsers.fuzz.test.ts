@@ -121,7 +121,7 @@ describe('valid values parse; any single-character change is refused', () => {
 })
 
 describe('signed verification links: any edit breaks the signature (service level)', () => {
-  it('fuzzed edits to a real link are always INVALID_TOKEN, the original always verifies', async () => {
+  it('fuzzed edits to a real link are always invalid_signature (#67), the original always verifies', async () => {
     const h = harness({ config: { features: { registration: true, emailVerification: true } } })
     await h.auth.passwords.register(new Browser().req, {
       name: 'Ada',
@@ -145,7 +145,7 @@ describe('signed verification links: any edit breaks the signature (service leve
           [field]: mutate(original, i % original.length, alphabet, pick),
         }
         await expect(h.auth.verification.verify(new Browser().req, changed)).rejects.toMatchObject({
-          code: 'INVALID_TOKEN',
+          code: 'invalid_signature',
         })
       }),
       { numRuns: 300 },

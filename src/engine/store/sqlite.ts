@@ -3,7 +3,7 @@
  *
  * It shows how an ORM-backed store must implement the atomic operations: single-use secrets are
  * `DELETE … RETURNING`, the TOTP replay guard is a conditional `UPDATE`, counters are one
- * `INSERT … ON CONFLICT DO UPDATE … RETURNING`. Every value is bound, never interpolated.
+ * `INSERT … ON conflict DO UPDATE … RETURNING`. Every value is bound, never interpolated.
  *
  * @module
  */
@@ -228,7 +228,7 @@ export function sqliteAuthStore(db: DatabaseSync): AuthStore {
       const row = get(
         `INSERT INTO users (id, email, name, password, email_verified_at, two_factor_secret, two_factor_confirmed_at,
            two_factor_last_step, current_team_id, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(email) DO NOTHING RETURNING *`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON conflict(email) DO NOTHING RETURNING *`,
         u.id,
         u.email,
         u.name,
@@ -494,7 +494,7 @@ export function sqliteAuthStore(db: DatabaseSync): AuthStore {
     },
     async putMember(m) {
       run(
-        'INSERT INTO team_members (team_id, user_id, role) VALUES (?, ?, ?) ON CONFLICT(team_id, user_id) DO UPDATE SET role = excluded.role',
+        'INSERT INTO team_members (team_id, user_id, role) VALUES (?, ?, ?) ON conflict(team_id, user_id) DO UPDATE SET role = excluded.role',
         m.teamId,
         m.userId,
         m.role,
@@ -569,7 +569,7 @@ export function sqliteCounterStore(db: DatabaseSync, clock: Clock = systemClock)
   db.exec(SQLITE_SCHEMA)
   const increment = db.prepare(
     `INSERT INTO auth_counters (key, value, expires_at) VALUES (?, 1, ?)
-     ON CONFLICT(key) DO UPDATE SET
+     ON conflict(key) DO UPDATE SET
        value = CASE WHEN auth_counters.expires_at <= ? THEN 1 ELSE auth_counters.value + 1 END,
        expires_at = CASE WHEN auth_counters.expires_at <= ? THEN excluded.expires_at ELSE auth_counters.expires_at END
      RETURNING value`,
@@ -588,7 +588,7 @@ export function sqliteCounterStore(db: DatabaseSync, clock: Clock = systemClock)
     },
     async set(key, value, ttlMs) {
       db.prepare(
-        'INSERT INTO auth_counters (key, value, expires_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, expires_at = excluded.expires_at',
+        'INSERT INTO auth_counters (key, value, expires_at) VALUES (?, ?, ?) ON conflict(key) DO UPDATE SET value = excluded.value, expires_at = excluded.expires_at',
       ).run(key, value, clock.now() + ttlMs)
     },
     async delete(key) {

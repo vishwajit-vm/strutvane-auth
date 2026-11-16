@@ -1,22 +1,26 @@
 import type { AddressInfo } from 'node:net'
 import { afterEach, describe, expect, it } from 'vitest'
-import type { AuthFeatures } from '../../src/engine/config.ts'
+import type { AuthFeatures, AuthFeaturesInput } from '../../src/engine/config.ts'
 import { parseCookieHeader } from '../../src/engine/http/cookies.ts'
 import { clientIp, createAuthServer, trustedProxies } from '../../src/engine/http/node.ts'
 import { createAuthHandler } from '../../src/engine/http/routes.ts'
 import { harness, PASSWORD, rejectsWith } from './helpers/harness.ts'
 
 const APP = 'http://localhost:3000'
-const ALL_OFF: Partial<AuthFeatures> = { passwordLogin: false }
+const ALL_OFF: AuthFeaturesInput = { password: false, passwordConfirmation: false }
 
 /** Every feature-owned route (method, path with sample params). */
 const FEATURE_ROUTES: Record<keyof AuthFeatures, readonly (readonly [string, string])[]> = {
-  passwordLogin: [
+  password: [
     ['POST', '/login'],
-    ['POST', '/forgot-password'],
-    ['POST', '/reset-password'],
     ['PUT', '/user/password'],
   ],
+  // Follows `password` (#25): switching passwords off removes the reset routes too.
+  passwordReset: [
+    ['POST', '/forgot-password'],
+    ['POST', '/reset-password'],
+  ],
+  passwordConfirmation: [['POST', '/user/confirm-password']],
   registration: [['POST', '/register']],
   emailVerification: [
     ['POST', '/email/verification-notification'],
@@ -42,7 +46,7 @@ const FEATURE_ROUTES: Record<keyof AuthFeatures, readonly (readonly [string, str
     ['POST', '/passkeys/options'],
     ['POST', '/passkeys/authenticate'],
   ],
-  tokens: [
+  apiTokens: [
     ['GET', '/user/api-tokens'],
     ['POST', '/user/api-tokens'],
     ['DELETE', '/user/api-tokens/x'],
@@ -117,7 +121,7 @@ describe('feature switches', () => {
         features: {
           emailLink: true,
           teams: true,
-          tokens: true,
+          apiTokens: true,
           passkeys: true,
           impersonation: true,
         },
@@ -147,7 +151,7 @@ describe('feature switches', () => {
 
   it('an enabled feature answers (so the 404 above really came from the switch)', async () => {
     const h = harness({
-      config: { features: { registration: true, emailLink: true, teams: true, tokens: true } },
+      config: { features: { registration: true, emailLink: true, teams: true, apiTokens: true } },
     })
     const handle = createAuthHandler(h.auth)
     expect(
@@ -212,7 +216,7 @@ describe('feature switches', () => {
       for (const method of methods) {
         const fn = target[method]
         if (!fn) throw new Error(`${service}.${method} missing`)
-        await rejectsWith(() => fn(req, { mode: 'passwordless' }), 'NOT_FOUND')
+        await rejectsWith(() => fn(req, { mode: 'passwordless' }), 'not_found')
       }
     }
     expect(await h.auth.tokens.authenticate('Bearer svp_x')).toBeUndefined()
@@ -266,7 +270,7 @@ describe('HTTP adapter', () => {
       type: 'about:blank',
       title: 'Too many attempts. Please try again later.',
       status: 429,
-      code: 'RATE_LIMITED',
+      code: 'rate_limited',
     })
   })
 
@@ -301,7 +305,7 @@ describe('HTTP adapter', () => {
   })
 
   it('a bearer route never falls back to the session cookie', async () => {
-    const h = harness({ config: { features: { tokens: true } } })
+    const h = harness({ config: { features: { apiTokens: true } } })
     await h.user()
     const handle = createAuthHandler(h.auth)
     const login = await handle(

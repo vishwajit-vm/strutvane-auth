@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { AuthError } from '../../src/engine/errors.ts'
 import { manualClock } from '../../src/engine/ports/clock.ts'
 import { parseVerificationUrl } from '../../src/engine/tokens/formats.ts'
 import { Browser, harness, PASSWORD, rejectsWith, START, STORES } from './helpers/harness.ts'
@@ -19,7 +20,7 @@ describe.each(STORES)('password reset (%s store)', (store) => {
   })
 
   it('resets once, expires after 60 minutes, and signs out everywhere (sessions + tokens)', async () => {
-    const h = harness({ store, config: { features: { tokens: true } } })
+    const h = harness({ store, config: { features: { apiTokens: true } } })
     const user = await h.user()
     const session = await h.signedIn(user.email)
     await h.auth.tokens.create(session.req, { name: 'CI' })
@@ -27,7 +28,7 @@ describe.each(STORES)('password reset (%s store)', (store) => {
     const token = await h.mailedToken('password-reset')
     await rejectsWith(
       () => h.auth.passwordReset.reset(new Browser().req, { token, password: 'short' }),
-      'WEAK_PASSWORD',
+      'weak_password',
     )
     // a too-short password did not burn the link
     await h.auth.passwordReset.reset(new Browser().req, { token, password: NEW_PASSWORD })
@@ -36,7 +37,7 @@ describe.each(STORES)('password reset (%s store)', (store) => {
     await rejectsWith(
       () =>
         h.auth.passwordReset.reset(new Browser().req, { token, password: 'second use attempt' }),
-      'INVALID_TOKEN',
+      'invalid_token',
     )
     expect(
       (
@@ -55,7 +56,7 @@ describe.each(STORES)('password reset (%s store)', (store) => {
     h.clock.advance(60 * 60_000)
     await rejectsWith(
       () => h.auth.passwordReset.reset(new Browser().req, { token: late, password: NEW_PASSWORD }),
-      'INVALID_TOKEN',
+      'invalid_token',
     )
   })
 
@@ -76,7 +77,7 @@ describe.each(STORES)('password reset (%s store)', (store) => {
     slow = true
     await rejectsWith(
       () => h.auth.passwordReset.reset(new Browser().req, { token, password: NEW_PASSWORD }),
-      'INVALID_TOKEN',
+      'invalid_token',
     )
     expect(
       (await h.auth.passwords.login(new Browser().req, { email: user.email, password: PASSWORD }))
@@ -99,7 +100,7 @@ describe.each(STORES)('password reset (%s store)', (store) => {
           token: first,
           password: 'attacker phrase here',
         }),
-      'INVALID_TOKEN',
+      'invalid_token',
     )
   })
 
@@ -128,7 +129,7 @@ describe.each(STORES)('password reset (%s store)', (store) => {
       await h.auth.passwordReset.request(new Browser(`192.0.2.${i}`).req, { email: user.email })
     await rejectsWith(
       () => h.auth.passwordReset.request(new Browser('192.0.2.9').req, { email: user.email }),
-      'RATE_LIMITED',
+      'rate_limited',
     )
     const token = await h.mailedToken('password-reset')
     const digestRow = await h.store.findOneTime(token, 'password-reset')
@@ -151,7 +152,7 @@ describe.each(STORES)('password reset (%s store)', (store) => {
           email: user.email,
           password: PASSWORD,
         }),
-      'RATE_LIMITED',
+      'rate_limited',
     )
     await h.auth.passwordReset.request(new Browser().req, { email: user.email })
     await h.auth.passwordReset.reset(new Browser().req, {
@@ -242,7 +243,7 @@ describe.each(STORES)('email verification (%s store)', (store) => {
     }
     await rejectsWith(
       () => h.auth.verification.verify(new Browser().req, { ...base, id: bob.id }),
-      'INVALID_TOKEN',
+      'invalid_signature',
     )
     await rejectsWith(
       () =>
@@ -250,18 +251,39 @@ describe.each(STORES)('email verification (%s store)', (store) => {
           ...base,
           expires: String(ada.expires + 3600),
         }),
-      'INVALID_TOKEN',
+      'invalid_signature',
     )
     await rejectsWith(
       () => h.auth.verification.verify(new Browser().req, { ...base, signature: bob.signature }),
-      'INVALID_TOKEN',
+      'invalid_signature',
     )
     await rejectsWith(
       () => h.auth.verification.verify(new Browser().req, { ...base, hash: bob.hash }),
-      'INVALID_TOKEN',
+      'invalid_signature',
     )
     h.clock.advance(60 * 60_000 + 1000)
-    await rejectsWith(() => h.auth.verification.verify(new Browser().req, base), 'INVALID_TOKEN')
+    // #67: an intact link past its time is `signature_expired`; an edited one stays
+    // `invalid_signature` even when it is also expired (the signature is checked first).
+    await rejectsWith(
+      () => h.auth.verification.verify(new Browser().req, base),
+      'signature_expired',
+    )
+    await rejectsWith(
+      () => h.auth.verification.verify(new Browser().req, { ...base, signature: bob.signature }),
+      'invalid_signature',
+    )
+    await rejectsWith(
+      () =>
+        h.auth.verification.verify(new Browser().req, {
+          id: 'x',
+          hash: 1,
+          expires: null,
+          signature: [],
+        }),
+      'invalid_signature',
+    )
+    for (const code of ['invalid_signature', 'signature_expired'] as const)
+      expect(new AuthError(code).status).toBe(403)
   })
 
   it('resend is throttled: one per minute, six per hour; verified users get "already-verified"', async () => {
@@ -272,13 +294,13 @@ describe.each(STORES)('email verification (%s store)', (store) => {
     const b = await h.signedIn('ada@acme.test')
     await h.store.updateUser(ada.id, { emailVerifiedAt: null })
     expect(await h.auth.verification.resend(b.req)).toEqual({ status: 'sent' })
-    await rejectsWith(() => h.auth.verification.resend(b.req), 'RATE_LIMITED')
+    await rejectsWith(() => h.auth.verification.resend(b.req), 'rate_limited')
     for (let i = 0; i < 5; i++) {
       h.clock.advance(61_000)
       expect(await h.auth.verification.resend(b.req)).toEqual({ status: 'sent' })
     }
     h.clock.advance(61_000)
-    await rejectsWith(() => h.auth.verification.resend(b.req), 'RATE_LIMITED')
+    await rejectsWith(() => h.auth.verification.resend(b.req), 'rate_limited')
     await h.user('eve@acme.test', { verified: true })
     expect(await h.auth.verification.resend((await h.signedIn('eve@acme.test')).req)).toEqual({
       status: 'already-verified',
@@ -308,7 +330,7 @@ describe.each(STORES)('email link sign-in (%s store)', (store) => {
     expect(await h.auth.emailLink.consume(b.req, { token })).toEqual({ status: 'signed-in' })
     expect((await h.auth.state(b.req))?.session.method).toBe('email-link')
     expect((await h.store.findUserById(user.id))?.emailVerifiedAt).not.toBeNull()
-    await rejectsWith(() => h.auth.emailLink.consume(b.req, { token }), 'INVALID_TOKEN')
+    await rejectsWith(() => h.auth.emailLink.consume(b.req, { token }), 'invalid_token')
   })
 
   it('on https the browser-binding nonce is a __Host- cookie (no sibling host can plant it)', async () => {
@@ -332,13 +354,13 @@ describe.each(STORES)('email link sign-in (%s store)', (store) => {
     const recipient = new Browser('198.51.100.66')
     await rejectsWith(
       () => h.auth.emailLink.consume(recipient.req, { token }),
-      'EMAIL_LINK_OTHER_BROWSER',
+      'email_link_other_browser',
     )
     // even with their own nonce cookie from requesting a link for themselves
     await h.auth.emailLink.request(recipient.req, { email: 'someone-else@acme.test' })
     await rejectsWith(
       () => h.auth.emailLink.consume(recipient.req, { token }),
-      'EMAIL_LINK_OTHER_BROWSER',
+      'email_link_other_browser',
     )
     expect(await h.auth.state(recipient.req)).toBeNull()
     expect((await h.auth.emailLink.consume(owner.req, { token })).status).toBe('signed-in')
@@ -370,7 +392,7 @@ describe.each(STORES)('email link sign-in (%s store)', (store) => {
     const second = await h.mailedToken('email-link')
     expect(first).not.toBe(second)
     h.clock.advance(15 * 60_000)
-    await rejectsWith(() => h.auth.emailLink.consume(b.req, { token: second }), 'INVALID_TOKEN')
+    await rejectsWith(() => h.auth.emailLink.consume(b.req, { token: second }), 'invalid_token')
     const c = new Browser()
     await h.auth.emailLink.request(c.req, { email: 'ada@acme.test' })
     const one = await h.mailedToken('email-link')
@@ -379,7 +401,7 @@ describe.each(STORES)('email link sign-in (%s store)', (store) => {
     const two = await h.mailedToken('email-link')
     expect((await h.auth.emailLink.consume(c.req, { token: one })).status).toBe('signed-in')
     // a successful sign-in kills the user's other outstanding links
-    await rejectsWith(() => h.auth.emailLink.consume(c.req, { token: two }), 'INVALID_TOKEN')
+    await rejectsWith(() => h.auth.emailLink.consume(c.req, { token: two }), 'invalid_token')
   })
 
   it('is rate-limited per account and per IP', async () => {
@@ -389,13 +411,13 @@ describe.each(STORES)('email link sign-in (%s store)', (store) => {
       await h.auth.emailLink.request(new Browser(`192.0.2.${i}`).req, { email: 'ada@acme.test' })
     await rejectsWith(
       () => h.auth.emailLink.request(new Browser('192.0.2.50').req, { email: 'ada@acme.test' }),
-      'RATE_LIMITED',
+      'rate_limited',
     )
     for (let i = 0; i < 5; i++)
       await h.auth.emailLink.request(new Browser('198.51.100.9').req, { email: `u${i}@acme.test` })
     await rejectsWith(
       () => h.auth.emailLink.request(new Browser('198.51.100.9').req, { email: 'u9@acme.test' }),
-      'RATE_LIMITED',
+      'rate_limited',
     )
   })
 })

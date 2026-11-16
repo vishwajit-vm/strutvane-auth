@@ -225,7 +225,7 @@ export function createAuth(ports: AuthPorts): Auth {
       async createUser(input) {
         const email = parseEmail(input.email)
         if (email === undefined)
-          throw new AuthError('VALIDATION_FAILED', {
+          throw new AuthError('validation_failed', {
             issues: [{ field: 'email', code: 'invalid' }],
           })
         const password =
@@ -240,7 +240,7 @@ export function createAuth(ports: AuthPorts): Auth {
               })
         for (const role of input.roles ?? [])
           if (!deps.config.roles.includes(role))
-            throw new AuthError('VALIDATION_FAILED', {
+            throw new AuthError('validation_failed', {
               issues: [{ field: 'roles', code: 'invalid' }],
             })
         const now = clock.now()
@@ -256,7 +256,7 @@ export function createAuth(ports: AuthPorts): Auth {
           currentTeamId: null,
           createdAt: now,
         })
-        if (!created) throw new AuthError('EMAIL_TAKEN')
+        if (!created) throw new AuthError('email_taken')
         if (input.roles) await deps.store.setUserRoles(created.id, input.roles)
         if (deps.config.features.teams) {
           await createPersonalTeam(deps, undefined, created)

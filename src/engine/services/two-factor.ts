@@ -137,12 +137,12 @@ export function twoFactorService(deps: AuthDeps): TwoFactorService {
     const locked = await deps.lockout.lockedFor(key)
     if (locked !== undefined) {
       await fail('locked')
-      throw new AuthError('RATE_LIMITED', { retryAfterSeconds: locked })
+      throw new AuthError('rate_limited', { retryAfterSeconds: locked })
     }
     const retry = await deps.limiter.hit([[key, deps.config.limits.twoFactorPerAccount]])
     if (retry !== undefined) {
       await fail('rate-limited')
-      throw new AuthError('RATE_LIMITED', { retryAfterSeconds: retry })
+      throw new AuthError('rate_limited', { retryAfterSeconds: retry })
     }
     if (!(await attempt())) {
       await fail('invalid-code')
@@ -155,7 +155,7 @@ export function twoFactorService(deps: AuthDeps): TwoFactorService {
           userId: user.id,
           seconds: lockedFor,
         })
-      throw new AuthError('INVALID_CODE')
+      throw new AuthError('invalid_code')
     }
     await deps.lockout.succeed(key)
   }
@@ -165,7 +165,7 @@ export function twoFactorService(deps: AuthDeps): TwoFactorService {
       const active = await settingsSession(req)
       requireRecentConfirmation(deps, active)
       const { user } = active
-      if (user.twoFactorConfirmedAt !== null) throw new AuthError('CONFLICT')
+      if (user.twoFactorConfirmedAt !== null) throw new AuthError('conflict')
       const secret = randomBytes(20)
       await deps.store.updateUser(user.id, {
         twoFactorSecret: seal(secretKey(), secret.toString('base64url'), user.id),
@@ -186,7 +186,7 @@ export function twoFactorService(deps: AuthDeps): TwoFactorService {
       const active = await settingsSession(req)
       const { user } = active
       if (user.twoFactorSecret === null || user.twoFactorConfirmedAt !== null)
-        throw new AuthError('CONFLICT')
+        throw new AuthError('conflict')
       const code = parseTotpCode(input.code)
       await guarded(req, user, async () => code !== undefined && (await acceptTotp(user, code)))
       // Codes FIRST, the switch LAST: a storage failure in between must not turn 2FA on with no
@@ -217,7 +217,7 @@ export function twoFactorService(deps: AuthDeps): TwoFactorService {
     async regenerateRecoveryCodes(req) {
       const active = await settingsSession(req)
       requireRecentConfirmation(deps, active)
-      if (active.user.twoFactorConfirmedAt === null) throw new AuthError('CONFLICT')
+      if (active.user.twoFactorConfirmedAt === null) throw new AuthError('conflict')
       const recoveryCodes = await newRecoveryCodes(active.user.id)
       await emit(deps, req, { type: 'recovery-codes.regenerated', userId: active.user.id })
       return { recoveryCodes }
@@ -231,9 +231,9 @@ export function twoFactorService(deps: AuthDeps): TwoFactorService {
     async challenge(req, input) {
       requireFeature(deps, 'twoFactor')
       const pending = await readSession(deps, req)
-      if (pending?.state !== 'two-factor') throw new AuthError('UNAUTHENTICATED')
+      if (pending?.state !== 'two-factor') throw new AuthError('unauthenticated')
       const user = await deps.store.findUserById(pending.userId)
-      if (!user || user.twoFactorConfirmedAt === null) throw new AuthError('UNAUTHENTICATED')
+      if (!user || user.twoFactorConfirmedAt === null) throw new AuthError('unauthenticated')
       let factor: 'totp' | 'recovery-code'
       if (input.code !== undefined) {
         factor = 'totp'
@@ -258,7 +258,7 @@ export function twoFactorService(deps: AuthDeps): TwoFactorService {
           remaining: await deps.store.countRecoveryCodes(user.id),
         })
       } else {
-        throw new AuthError('VALIDATION_FAILED', { issues: [{ field: 'code', code: 'required' }] })
+        throw new AuthError('validation_failed', { issues: [{ field: 'code', code: 'required' }] })
       }
       if (input.rememberDevice === true && deps.config.twoFactor.rememberDeviceMs > 0) {
         const raw = randomSecret()

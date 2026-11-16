@@ -23,7 +23,7 @@ export type LimitCheck = readonly [key: string, rule: RateRule]
  * @example
  * ```ts
  * const retry = await limiter.hit([[`login:ip:${subject}`, limits.loginPerIp], [`login:acct:${d}`, limits.loginPerAccount]])
- * if (retry !== undefined) throw new AuthError('RATE_LIMITED', { retryAfterSeconds: retry })
+ * if (retry !== undefined) throw new AuthError('rate_limited', { retryAfterSeconds: retry })
  * ```
  */
 export interface Limiter {

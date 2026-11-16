@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { abilityGranted } from '../../src/engine/services/tokens.ts'
 import { Browser, harness, rejectsWith, STORES } from './helpers/harness.ts'
 
-const config = { features: { tokens: true }, tokens: { abilities: ['post.*', 'comment.view'] } }
+const config = { features: { apiTokens: true }, tokens: { abilities: ['post.*', 'comment.view'] } }
 
 describe('abilityGranted', () => {
   it('matches *, exact names and prefix wildcards only', () => {
@@ -51,25 +51,25 @@ describe.each(STORES)('personal access tokens (%s store)', (store) => {
     const b = await h.signedIn((await h.user()).email)
     await rejectsWith(
       () => h.auth.tokens.create(b.req, { name: 'x', abilities: ['*'] }),
-      'VALIDATION_FAILED',
+      'validation_failed',
     )
     await rejectsWith(
       () => h.auth.tokens.create(b.req, { name: 'x', abilities: ['comment.*'] }),
-      'VALIDATION_FAILED',
+      'validation_failed',
     )
     await rejectsWith(
       () => h.auth.tokens.create(b.req, { name: 'x', abilities: ['user.delete'] }),
-      'VALIDATION_FAILED',
+      'validation_failed',
     )
     await rejectsWith(
       () => h.auth.tokens.create(b.req, { name: 'x', abilities: 'post.view' }),
-      'VALIDATION_FAILED',
+      'validation_failed',
     )
     await rejectsWith(
       () => h.auth.tokens.create(b.req, { name: 'x', expiresInDays: 400 }),
-      'VALIDATION_FAILED',
+      'validation_failed',
     )
-    await rejectsWith(() => h.auth.tokens.create(b.req, { name: '' }), 'VALIDATION_FAILED')
+    await rejectsWith(() => h.auth.tokens.create(b.req, { name: '' }), 'validation_failed')
     const ok = await h.auth.tokens.create(b.req, {
       name: 'x',
       abilities: ['post.view', 'post.update', 'comment.view'],
@@ -80,14 +80,14 @@ describe.each(STORES)('personal access tokens (%s store)', (store) => {
     expect(all.token.abilities).toEqual(['post.*', 'comment.view'])
   })
 
-  it("revoke stops a token at once; another user's token id is NOT_FOUND", async () => {
+  it("revoke stops a token at once; another user's token id is not_found", async () => {
     const h = harness({ store, config })
     await h.user('ada@acme.test')
     await h.user('eve@acme.test')
     const ada = await h.signedIn('ada@acme.test')
     const eve = await h.signedIn('eve@acme.test')
     const { plainText, token } = await h.auth.tokens.create(ada.req, { name: 'CLI' })
-    await rejectsWith(() => h.auth.tokens.revoke(eve.req, { id: token.id }), 'NOT_FOUND')
+    await rejectsWith(() => h.auth.tokens.revoke(eve.req, { id: token.id }), 'not_found')
     expect(await h.auth.tokens.authenticate(`Bearer ${plainText}`)).toBeDefined()
     await h.auth.tokens.revoke(ada.req, { id: token.id })
     expect(await h.auth.tokens.authenticate(`Bearer ${plainText}`)).toBeUndefined()
@@ -147,6 +147,6 @@ describe.each(STORES)('personal access tokens (%s store)', (store) => {
         })(),
     )
     expect(await off.auth.tokens.authenticate(`Bearer ${plainText}`)).toBeUndefined()
-    await rejectsWith(() => off.auth.tokens.create(new Browser().req, { name: 'x' }), 'NOT_FOUND')
+    await rejectsWith(() => off.auth.tokens.create(new Browser().req, { name: 'x' }), 'not_found')
   })
 })

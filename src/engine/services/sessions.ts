@@ -88,7 +88,7 @@ export function sessionService(deps: AuthDeps): SessionService {
       const target = (await deps.store.listUserSessions(active.user.id)).find(
         (s) => typeof input.handle === 'string' && handleOf(s.digest) === input.handle,
       )
-      if (!target || target.digest === active.session.digest) throw new AuthError('NOT_FOUND')
+      if (!target || target.digest === active.session.digest) throw new AuthError('not_found')
       await deps.store.deleteSession(target.digest)
       await emit(deps, req, { type: 'session.revoked', userId: active.user.id, count: 1 })
     },

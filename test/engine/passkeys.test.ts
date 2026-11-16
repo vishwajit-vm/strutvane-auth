@@ -38,7 +38,7 @@ describe.each(STORES)('passkeys (%s store)', (store) => {
     const b = await h.signedIn(user.email)
     await rejectsWith(
       () => h.auth.passkeys.registrationOptions(b.req),
-      'PASSWORD_CONFIRMATION_REQUIRED',
+      'password_confirmation_required',
     )
     const phone = new SoftAuthenticator(ORIGIN)
     const key = new SoftAuthenticator(ORIGIN)
@@ -57,7 +57,7 @@ describe.each(STORES)('passkeys (%s store)', (store) => {
     expect((await h.auth.passkeys.list(b.req))[0]?.name).toBe('Work phone')
     await h.auth.passkeys.remove(b.req, { id: first.id })
     expect(await h.auth.passkeys.list(b.req)).toHaveLength(1)
-    await rejectsWith(() => h.auth.passkeys.remove(b.req, { id: first.id }), 'NOT_FOUND')
+    await rejectsWith(() => h.auth.passkeys.remove(b.req, { id: first.id }), 'not_found')
     expect(h.eventsOf('passkey.added')).toHaveLength(2)
     expect(h.eventsOf('passkey.removed')).toHaveLength(1)
   })
@@ -70,10 +70,10 @@ describe.each(STORES)('passkeys (%s store)', (store) => {
     const passkey = await addPasskey(h, ada, new SoftAuthenticator(ORIGIN))
     const eve = await h.signedIn('eve@acme.test')
     await h.auth.passwords.confirm(eve.req, { password: PASSWORD })
-    await rejectsWith(() => h.auth.passkeys.remove(eve.req, { id: passkey.id }), 'NOT_FOUND')
+    await rejectsWith(() => h.auth.passkeys.remove(eve.req, { id: passkey.id }), 'not_found')
     await rejectsWith(
       () => h.auth.passkeys.rename(eve.req, { id: passkey.id, name: 'mine' }),
-      'NOT_FOUND',
+      'not_found',
     )
   })
 
@@ -101,12 +101,12 @@ describe.each(STORES)('passkeys (%s store)', (store) => {
     await h.auth.passkeys.authenticationOptions(attacker.req, { mode: 'passwordless' })
     await rejectsWith(
       () => h.auth.passkeys.authenticate(attacker.req, { response }),
-      'INVALID_CODE',
+      'invalid_code',
     )
     // replay with no ceremony at all
     await rejectsWith(
       () => h.auth.passkeys.authenticate(new Browser().req, { response }),
-      'INVALID_TOKEN',
+      'invalid_token',
     )
   })
 
@@ -118,13 +118,13 @@ describe.each(STORES)('passkeys (%s store)', (store) => {
     await passwordless(h, device)
     await rejectsWith(
       () => passwordless(h, device, new Browser(), { keepCounter: true }),
-      'INVALID_CODE',
+      'invalid_code',
     )
     await rejectsWith(
       () => passwordless(h, device, new Browser(), { origin: 'https://evil.example' }),
-      'INVALID_CODE',
+      'invalid_code',
     )
-    await rejectsWith(() => passwordless(h, device, new Browser(), { uv: false }), 'INVALID_CODE')
+    await rejectsWith(() => passwordless(h, device, new Browser(), { uv: false }), 'invalid_code')
   })
 
   it('race: two sign-ins from a cloned authenticator with the SAME counter, at once: exactly one wins', async () => {
@@ -159,7 +159,7 @@ describe.each(STORES)('passkeys (%s store)', (store) => {
         h.auth.passkeys.register(b.req, {
           response: device.register(options, { challenge: 'AAAA' }),
         }),
-      'INVALID_CODE',
+      'invalid_code',
     )
     options = await h.auth.passkeys.registrationOptions(b.req)
     await rejectsWith(
@@ -167,12 +167,12 @@ describe.each(STORES)('passkeys (%s store)', (store) => {
         h.auth.passkeys.register(b.req, {
           response: device.register(options, { origin: 'https://evil.example' }),
         }),
-      'INVALID_CODE',
+      'invalid_code',
     )
     options = await h.auth.passkeys.registrationOptions(b.req)
     await rejectsWith(
       () => h.auth.passkeys.register(b.req, { response: 'not json' }),
-      'VALIDATION_FAILED',
+      'validation_failed',
     )
     expect(await h.store.listPasskeys(user.id)).toHaveLength(0)
   })
@@ -207,7 +207,7 @@ describe.each(STORES)('passkeys (%s store)', (store) => {
     const eveAnswer = eveKey.assert({ ...options, allowCredentials: [] })
     await rejectsWith(
       () => h.auth.passkeys.authenticate(pending.req, { response: eveAnswer }),
-      'INVALID_CODE',
+      'invalid_code',
     )
     options = await h.auth.passkeys.authenticationOptions(pending.req, { mode: 'second-factor' })
     expect(
@@ -220,7 +220,7 @@ describe.each(STORES)('passkeys (%s store)', (store) => {
     // a guest without a pending sign-in cannot start a second-factor ceremony
     await rejectsWith(
       () => h.auth.passkeys.authenticationOptions(new Browser().req, { mode: 'second-factor' }),
-      'UNAUTHENTICATED',
+      'unauthenticated',
     )
     // passwordless for a 2FA user: the passkey with user verification is both factors
     const { result } = await passwordless(h, adaKey)

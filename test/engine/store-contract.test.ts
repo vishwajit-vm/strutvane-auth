@@ -229,7 +229,7 @@ describe('SQLite across connections (several app processes on one database)', ()
             email: `x${i}@acme.test`,
             password: 'wrong password!',
           }),
-        'INVALID_CREDENTIALS',
+        'invalid_credentials',
       )
     }
     await rejectsWith(
@@ -238,7 +238,7 @@ describe('SQLite across connections (several app processes on one database)', ()
           email: 'y@acme.test',
           password: 'wrong password!',
         }),
-      'RATE_LIMITED',
+      'rate_limited',
     )
     await rejectsWith(
       () =>
@@ -246,7 +246,7 @@ describe('SQLite across connections (several app processes on one database)', ()
           email: 'y@acme.test',
           password: 'wrong password!',
         }),
-      'RATE_LIMITED',
+      'rate_limited',
     )
   })
 

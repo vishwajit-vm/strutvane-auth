@@ -13,7 +13,7 @@ import { createHash, timingSafeEqual } from 'node:crypto'
  *
  * @example
  * ```ts
- * if (!safeEqual(presentedDigest, storedDigest)) throw new AuthError('INVALID_TOKEN')
+ * if (!safeEqual(presentedDigest, storedDigest)) throw new AuthError('invalid_token')
  * ```
  */
 export function safeEqual(a: string, b: string): boolean {

@@ -3,7 +3,7 @@ import { base32Decode } from '../../src/engine/crypto/random.ts'
 import { totp } from '../../src/engine/totp/totp.ts'
 import { Browser, type Harness, harness, PASSWORD, rejectsWith, STORES } from './helpers/harness.ts'
 
-const features = { twoFactor: true, emailLink: true, tokens: true }
+const features = { twoFactor: true, emailLink: true, apiTokens: true }
 
 /** Turn 2FA on for a signed-in browser; resolve the raw secret and the recovery codes. */
 async function enable(
@@ -34,7 +34,7 @@ describe.each(STORES)('two-factor (%s store)', (store) => {
     const h = harness({ store, config: { features } })
     await h.user()
     const b = await h.signedIn('ada@acme.test')
-    await rejectsWith(() => h.auth.twoFactor.enable(b.req), 'PASSWORD_CONFIRMATION_REQUIRED')
+    await rejectsWith(() => h.auth.twoFactor.enable(b.req), 'password_confirmation_required')
     await h.auth.passwords.confirm(b.req, { password: PASSWORD })
     const setup = await h.auth.twoFactor.enable(b.req)
     expect(setup.otpauthUri).toMatch(
@@ -49,7 +49,7 @@ describe.each(STORES)('two-factor (%s store)', (store) => {
         })
       ).status,
     ).toBe('signed-in')
-    await rejectsWith(() => h.auth.twoFactor.confirm(b.req, { code: '000000' }), 'INVALID_CODE')
+    await rejectsWith(() => h.auth.twoFactor.confirm(b.req, { code: '000000' }), 'invalid_code')
     expect((await h.auth.state(b.req))?.user.twoFactorEnabled).toBe(false)
   })
 
@@ -79,11 +79,11 @@ describe.each(STORES)('two-factor (%s store)', (store) => {
     const pendingId = b.get('strutvane_session')
     expect(await h.auth.state(b.req)).toBeNull()
     expect(await h.auth.pendingChallenge(b.req)).toEqual({ methods: ['totp', 'recovery-code'] })
-    await rejectsWith(() => h.auth.tokens.list(b.req), 'UNAUTHENTICATED')
-    await rejectsWith(() => h.auth.sessions.list(b.req), 'UNAUTHENTICATED')
+    await rejectsWith(() => h.auth.tokens.list(b.req), 'unauthenticated')
+    await rejectsWith(() => h.auth.sessions.list(b.req), 'unauthenticated')
     await rejectsWith(
       () => h.auth.passwords.confirm(b.req, { password: PASSWORD }),
-      'UNAUTHENTICATED',
+      'unauthenticated',
     )
     const stolenPending = b.clone()
     expect(await h.auth.twoFactor.challenge(b.req, { code: totp(secret, h.clock.now()) })).toEqual({
@@ -104,11 +104,11 @@ describe.each(STORES)('two-factor (%s store)', (store) => {
     await h.auth.twoFactor.challenge((await passwordStep(h)).req, { code })
     await rejectsWith(
       async () => h.auth.twoFactor.challenge((await passwordStep(h)).req, { code }),
-      'INVALID_CODE',
+      'invalid_code',
     )
     await rejectsWith(
       async () => h.auth.twoFactor.challenge((await passwordStep(h)).req, { code: older }),
-      'INVALID_CODE',
+      'invalid_code',
     )
     h.clock.advance(30_000)
     expect(
@@ -148,7 +148,7 @@ describe.each(STORES)('two-factor (%s store)', (store) => {
     ).toBe('signed-in')
     await rejectsWith(
       async () => h.auth.twoFactor.challenge((await passwordStep(h)).req, { recoveryCode: code }),
-      'INVALID_CODE',
+      'invalid_code',
     )
     expect(h.eventsOf('recovery-code.used')).toEqual([expect.objectContaining({ remaining: 9 })])
     expect(h.eventsOf('login').at(-1)).toMatchObject({ secondFactor: 'recovery-code' })
@@ -164,7 +164,7 @@ describe.each(STORES)('two-factor (%s store)', (store) => {
     await rejectsWith(
       async () =>
         h.auth.twoFactor.challenge((await passwordStep(h)).req, { recoveryCode: codes[1] }),
-      'INVALID_CODE',
+      'invalid_code',
     )
     expect(
       (
@@ -192,7 +192,7 @@ describe.each(STORES)('two-factor (%s store)', (store) => {
     const fresh = await passwordStep(h, '192.0.2.200')
     await rejectsWith(
       () => h.auth.twoFactor.challenge(fresh.req, { code: totp(secret, h.clock.now()) }),
-      'RATE_LIMITED',
+      'rate_limited',
     )
     expect(h.eventsOf('lockout').filter((e) => e.scope === 'two-factor').length).toBeGreaterThan(0)
   })
@@ -205,7 +205,7 @@ describe.each(STORES)('two-factor (%s store)', (store) => {
     h.clock.advance(10 * 60_000)
     await rejectsWith(
       () => h.auth.twoFactor.challenge(b.req, { code: totp(secret, h.clock.now()) }),
-      'UNAUTHENTICATED',
+      'unauthenticated',
     )
   })
 
@@ -276,7 +276,7 @@ describe.each(STORES)('two-factor (%s store)', (store) => {
       h.clock.advance(60 * 60_000)
       await h.auth.state(b.req)
     }
-    await rejectsWith(() => h.auth.twoFactor.disable(b.req), 'PASSWORD_CONFIRMATION_REQUIRED')
+    await rejectsWith(() => h.auth.twoFactor.disable(b.req), 'password_confirmation_required')
     await h.auth.passwords.confirm(b.req, { password: PASSWORD })
     await h.auth.twoFactor.disable(b.req)
     expect(h.eventsOf('two-factor.disabled')).toHaveLength(1)
@@ -296,8 +296,8 @@ describe.each(STORES)('two-factor (%s store)', (store) => {
     await enable(h, await h.signedIn('ada@acme.test'))
     const b = await passwordStep(h)
     for (const code of [123456, '12345', '1234567', 'abcdef', { toString: () => '123456' }])
-      await rejectsWith(() => h.auth.twoFactor.challenge(b.req, { code }), 'INVALID_CODE')
-    await rejectsWith(() => h.auth.twoFactor.challenge(b.req, { code: '000000' }), 'RATE_LIMITED')
-    await rejectsWith(() => h.auth.twoFactor.challenge(b.req, {}), 'VALIDATION_FAILED')
+      await rejectsWith(() => h.auth.twoFactor.challenge(b.req, { code }), 'invalid_code')
+    await rejectsWith(() => h.auth.twoFactor.challenge(b.req, { code: '000000' }), 'rate_limited')
+    await rejectsWith(() => h.auth.twoFactor.challenge(b.req, {}), 'validation_failed')
   })
 })

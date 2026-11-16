@@ -109,14 +109,14 @@ export function tokenService(deps: AuthDeps): TokenService {
     // No abilities asked for: the token gets every pattern the app allows (Sanctum's `['*']`).
     if (value === undefined) return tokens.abilities
     if (!Array.isArray(value) || value.length === 0 || value.length > 50)
-      throw new AuthError('VALIDATION_FAILED', {
+      throw new AuthError('validation_failed', {
         issues: [{ field: 'abilities', code: 'invalid' }],
       })
     const out: string[] = []
     for (const a of value) {
       // A requested pattern must be covered by an allowed one: `post.*` needs `*` or `post.*`.
       if (typeof a !== 'string' || !isAbility(a) || !abilityGranted(tokens.abilities, a))
-        throw new AuthError('VALIDATION_FAILED', {
+        throw new AuthError('validation_failed', {
           issues: [{ field: 'abilities', code: 'not_allowed' }],
         })
       if (!out.includes(a)) out.push(a)
@@ -126,7 +126,7 @@ export function tokenService(deps: AuthDeps): TokenService {
 
   return {
     async create(req, input) {
-      requireFeature(deps, 'tokens')
+      requireFeature(deps, 'apiTokens')
       const active = await requireActive(deps, req)
       assertNotImpersonating(active)
       if (
@@ -134,10 +134,10 @@ export function tokenService(deps: AuthDeps): TokenService {
         input.name.trim().length < 1 ||
         input.name.trim().length > 100
       )
-        throw new AuthError('VALIDATION_FAILED', { issues: [{ field: 'name', code: 'invalid' }] })
+        throw new AuthError('validation_failed', { issues: [{ field: 'name', code: 'invalid' }] })
       const abilities = parseAbilities(input.abilities)
       if (abilities.length === 0)
-        throw new AuthError('VALIDATION_FAILED', {
+        throw new AuthError('validation_failed', {
           issues: [{ field: 'abilities', code: 'required' }],
         })
       let lifetime = tokens.defaultExpiryMs
@@ -149,7 +149,7 @@ export function tokenService(deps: AuthDeps): TokenService {
           days < 1 ||
           days * DAY > tokens.maxExpiryMs
         )
-          throw new AuthError('VALIDATION_FAILED', {
+          throw new AuthError('validation_failed', {
             issues: [{ field: 'expiresInDays', code: 'invalid' }],
           })
         lifetime = days * DAY
@@ -172,23 +172,23 @@ export function tokenService(deps: AuthDeps): TokenService {
     },
 
     async list(req) {
-      requireFeature(deps, 'tokens')
+      requireFeature(deps, 'apiTokens')
       const active = await requireActive(deps, req)
       return (await deps.store.listTokens(active.user.id)).map(view)
     },
 
     async revoke(req, input) {
-      requireFeature(deps, 'tokens')
+      requireFeature(deps, 'apiTokens')
       const active = await requireActive(deps, req)
       assertNotImpersonating(active)
       // Someone else's token id answers exactly like an unknown one.
       if (typeof input.id !== 'string' || !(await deps.store.deleteToken(active.user.id, input.id)))
-        throw new AuthError('NOT_FOUND')
+        throw new AuthError('not_found')
       await emit(deps, req, { type: 'token.revoked', userId: active.user.id, tokenId: input.id })
     },
 
     async authenticate(authorization) {
-      if (!deps.config.features.tokens) return undefined
+      if (!deps.config.features.apiTokens) return undefined
       const plain = parsePersonalAccessToken(parseBearer(authorization), tokens.prefix)
       if (plain === undefined) return undefined
       const record = await deps.store.findTokenByDigest(digest(plain))

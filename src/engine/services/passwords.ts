@@ -5,7 +5,7 @@
  * 1. rate limits (per IP /64 and per account digest) and the lockout are checked BEFORE hashing;
  * 2. the password is verified against the stored hash, or against a dummy hash with the same cost
  *    when there is no user or no password, so known and unknown emails take the same time;
- * 3. every failure is the same `INVALID_CREDENTIALS`, for a missing account, a passwordless
+ * 3. every failure is the same `invalid_credentials`, for a missing account, a passwordless
  *    account and a wrong password alike;
  * 4. on success, an outdated hash is upgraded (rehash-on-login) and the lockout resets.
  *
@@ -24,7 +24,7 @@ import {
 } from '../core/sessions.ts'
 import { completeFirstFactor, deviceCookie, type SignInResult } from '../core/sign-in.ts'
 import { newId } from '../crypto/random.ts'
-import { AuthError, type AuthIssue } from '../errors.ts'
+import { AuthError, type AuthIssueInput } from '../errors.ts'
 import { rateLimitSubject } from '../limits/ip.ts'
 import { parseEmail } from '../password/email.ts'
 import { assertPasswordAllowed, passwordLengthOk } from '../password/rules.ts'
@@ -96,17 +96,17 @@ export interface PasswordService {
 
 function parseName(value: unknown): string {
   if (typeof value !== 'string')
-    throw new AuthError('VALIDATION_FAILED', { issues: [{ field: 'name', code: 'required' }] })
+    throw new AuthError('validation_failed', { issues: [{ field: 'name', code: 'required' }] })
   const name = value.trim()
   if (name.length < 1 || name.length > 200)
-    throw new AuthError('VALIDATION_FAILED', { issues: [{ field: 'name', code: 'invalid' }] })
+    throw new AuthError('validation_failed', { issues: [{ field: 'name', code: 'invalid' }] })
   return name
 }
 
 function requireEmail(value: unknown): string {
   const email = parseEmail(value)
   if (email === undefined)
-    throw new AuthError('VALIDATION_FAILED', { issues: [{ field: 'email', code: 'invalid' }] })
+    throw new AuthError('validation_failed', { issues: [{ field: 'email', code: 'invalid' }] })
   return email
 }
 
@@ -115,7 +115,7 @@ async function limited(
   checks: Parameters<AuthDeps['limiter']['hit']>[0],
 ): Promise<void> {
   const retry = await deps.limiter.hit(checks)
-  if (retry !== undefined) throw new AuthError('RATE_LIMITED', { retryAfterSeconds: retry })
+  if (retry !== undefined) throw new AuthError('rate_limited', { retryAfterSeconds: retry })
 }
 
 /** Build the {@link PasswordService}. */
@@ -148,10 +148,10 @@ export function passwordService(deps: AuthDeps): PasswordService {
   const checkCurrentPassword = async (
     active: ActiveSession,
     password: unknown,
-    issues?: readonly AuthIssue[],
+    issues?: readonly AuthIssueInput[],
   ): Promise<void> => {
     await limited(deps, [[`confirm:${active.user.id}`, limits.confirmPasswordPerAccount]])
-    const fail = () => new AuthError('INVALID_CREDENTIALS', issues ? { issues } : {})
+    const fail = () => new AuthError('invalid_credentials', issues ? { issues } : {})
     if (typeof password !== 'string' || !passwordLengthOk(password, deps.config.passwords.max))
       throw fail()
     if (!(await verifyUserPassword(active.user, password)) || active.user.passwordHash === null)
@@ -165,7 +165,7 @@ export function passwordService(deps: AuthDeps): PasswordService {
       const name = parseName(input.name)
       const email = requireEmail(input.email)
       // Always hash (when passwords are on), whether or not the email is taken: equal timing.
-      const passwordHash = deps.config.features.passwordLogin
+      const passwordHash = deps.config.features.password
         ? await deps.hasher.hash(await allowed(input.password))
         : null
       const now = deps.clock.now()
@@ -208,7 +208,7 @@ export function passwordService(deps: AuthDeps): PasswordService {
       // Without verification there is no way to confirm the address, so a taken email has to be
       // reported (the documented, rate-limited enumeration of apps that skip verification).
       if (!created)
-        throw new AuthError('EMAIL_TAKEN', { issues: [{ field: 'email', code: 'taken' }] })
+        throw new AuthError('email_taken', { issues: [{ field: 'email', code: 'taken' }] })
       if (deps.config.features.teams) await createPersonalTeam(deps, req, created)
       await emit(deps, req, { type: 'registered', userId: created.id })
       await startSession(deps, req, {
@@ -227,13 +227,13 @@ export function passwordService(deps: AuthDeps): PasswordService {
     },
 
     async login(req, input) {
-      requireFeature(deps, 'passwordLogin')
+      requireFeature(deps, 'password')
       const email = requireEmail(input.email)
       if (
         typeof input.password !== 'string' ||
         !passwordLengthOk(input.password, deps.config.passwords.max)
       )
-        throw new AuthError('VALIDATION_FAILED', {
+        throw new AuthError('validation_failed', {
           issues: [{ field: 'password', code: 'invalid' }],
         })
       const account = accountKey(deps, email)
@@ -255,12 +255,12 @@ export function passwordService(deps: AuthDeps): PasswordService {
       ])
       if (retry !== undefined) {
         await fail('rate-limited', null)
-        throw new AuthError('RATE_LIMITED', { retryAfterSeconds: retry })
+        throw new AuthError('rate_limited', { retryAfterSeconds: retry })
       }
       const locked = await deps.lockout.lockedFor(`login:${account}`)
       if (locked !== undefined) {
         await fail('locked', null)
-        throw new AuthError('RATE_LIMITED', { retryAfterSeconds: locked })
+        throw new AuthError('rate_limited', { retryAfterSeconds: locked })
       }
 
       const user = await deps.store.findUserByEmail(email)
@@ -276,7 +276,7 @@ export function passwordService(deps: AuthDeps): PasswordService {
             userId: user?.id ?? null,
             seconds: lockedFor,
           })
-        throw new AuthError('INVALID_CREDENTIALS')
+        throw new AuthError('invalid_credentials')
       }
       // With verification on, password sign-in waits for the mailbox proof (#114): until then the
       // password may be an attacker's (account pre-hijacking). Only a CORRECT password gets here, so
@@ -284,7 +284,7 @@ export function passwordService(deps: AuthDeps): PasswordService {
       if (deps.config.features.emailVerification && user.emailVerifiedAt === null) {
         await fail('email-not-verified', user.id)
         await remindToVerify(deps, user)
-        throw new AuthError('EMAIL_NOT_VERIFIED')
+        throw new AuthError('email_not_verified')
       }
       if (deps.hasher.needsRehash(user.passwordHash)) {
         await deps.store.updateUser(user.id, {
@@ -303,7 +303,7 @@ export function passwordService(deps: AuthDeps): PasswordService {
     },
 
     async change(req, input) {
-      requireFeature(deps, 'passwordLogin')
+      requireFeature(deps, 'password')
       const active = await requireActive(deps, req)
       assertNotImpersonating(active)
       const { user } = active
@@ -331,6 +331,7 @@ export function passwordService(deps: AuthDeps): PasswordService {
     },
 
     async confirm(req, input) {
+      requireFeature(deps, 'passwordConfirmation')
       const active = await requireActive(deps, req)
       // An impersonating admin does not know the user's password and must not gain the window.
       assertNotImpersonating(active)

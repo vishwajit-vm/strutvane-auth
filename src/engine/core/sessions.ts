@@ -186,10 +186,10 @@ export async function activeSession(
   return { session, user }
 }
 
-/** Like {@link activeSession} but throws `UNAUTHENTICATED` for guests. */
+/** Like {@link activeSession} but throws `unauthenticated` for guests. */
 export async function requireActive(deps: AuthDeps, req: AuthRequest): Promise<ActiveSession> {
   const active = await activeSession(deps, req)
-  if (!active) throw new AuthError('UNAUTHENTICATED')
+  if (!active) throw new AuthError('unauthenticated')
   return active
 }
 
@@ -199,12 +199,21 @@ export async function requireActive(deps: AuthDeps, req: AuthRequest): Promise<A
  * impersonation).
  */
 export function assertNotImpersonating(active: ActiveSession): void {
-  if (active.session.impersonatorId !== null) throw new AuthError('FORBIDDEN')
+  if (active.session.impersonatorId !== null) throw new AuthError('forbidden')
 }
 
-/** Throw `PASSWORD_CONFIRMATION_REQUIRED` unless the user confirmed within the window (3 h). */
-export function requireRecentConfirmation(deps: AuthDeps, active: ActiveSession): void {
+/**
+ * Throw `password_confirmation_required` unless the user confirmed within the window (3 h). With
+ * the `passwordConfirmation` feature off, sensitive actions need no fresh confirmation; boot
+ * refuses impersonation without it, so starting an impersonation always needs one.
+ */
+export function requireRecentConfirmation(
+  deps: AuthDeps,
+  active: ActiveSession,
+  options: { readonly always?: boolean } = {},
+): void {
+  if (!deps.config.features.passwordConfirmation && options.always !== true) return
   const at = active.session.passwordConfirmedAt
   if (at === null || deps.clock.now() - at > deps.config.sessions.confirmPasswordMs)
-    throw new AuthError('PASSWORD_CONFIRMATION_REQUIRED')
+    throw new AuthError('password_confirmation_required')
 }

@@ -52,7 +52,7 @@ function problem(error: AuthError): Response {
     status: error.status,
     code: error.code,
   }
-  if (error.options.issues) body['issues'] = error.options.issues
+  if (error.issues.length > 0) body['issues'] = error.issues
   const headers = new Headers({
     'content-type': 'application/problem+json',
     'cache-control': 'no-store',
@@ -64,7 +64,7 @@ function problem(error: AuthError): Response {
 
 /** The one 404 every unknown or disabled path gets. */
 function notFound(): Response {
-  return problem(new AuthError('NOT_FOUND'))
+  return problem(new AuthError('not_found'))
 }
 
 function routes(auth: Auth): readonly Route[] {
@@ -73,12 +73,12 @@ function routes(auth: Auth): readonly Route[] {
       method: 'GET',
       path: '/user',
       handle: async ({ req }) =>
-        (await auth.state(req)) ?? Promise.reject(new AuthError('UNAUTHENTICATED')),
+        (await auth.state(req)) ?? Promise.reject(new AuthError('unauthenticated')),
     },
     {
       method: 'POST',
       path: '/login',
-      feature: 'passwordLogin',
+      feature: 'password',
       handle: ({ req, body }) =>
         auth.passwords.login(req, body as { email: unknown; password: unknown }),
     },
@@ -97,26 +97,27 @@ function routes(auth: Auth): readonly Route[] {
     {
       method: 'POST',
       path: '/forgot-password',
-      feature: 'passwordLogin',
+      feature: 'passwordReset',
       handle: ({ req, body }) => auth.passwordReset.request(req, { email: body['email'] }),
     },
     {
       method: 'POST',
       path: '/reset-password',
-      feature: 'passwordLogin',
+      feature: 'passwordReset',
       handle: async ({ req, body }) =>
         await auth.passwordReset.reset(req, { token: body['token'], password: body['password'] }),
     },
     {
       method: 'PUT',
       path: '/user/password',
-      feature: 'passwordLogin',
+      feature: 'password',
       handle: async ({ req, body }) =>
         await auth.passwords.change(req, { current: body['current'], password: body['password'] }),
     },
     {
       method: 'POST',
       path: '/user/confirm-password',
+      feature: 'passwordConfirmation',
       handle: async ({ req, body }) =>
         await auth.passwords.confirm(req, { password: body['password'] }),
     },
@@ -196,13 +197,13 @@ function routes(auth: Auth): readonly Route[] {
     {
       method: 'GET',
       path: '/user/api-tokens',
-      feature: 'tokens',
+      feature: 'apiTokens',
       handle: ({ req }) => auth.tokens.list(req),
     },
     {
       method: 'POST',
       path: '/user/api-tokens',
-      feature: 'tokens',
+      feature: 'apiTokens',
       handle: ({ req, body }) =>
         auth.tokens.create(req, {
           name: body['name'],
@@ -213,17 +214,17 @@ function routes(auth: Auth): readonly Route[] {
     {
       method: 'DELETE',
       path: '/user/api-tokens/:id',
-      feature: 'tokens',
+      feature: 'apiTokens',
       handle: async ({ req, params }) => await auth.tokens.revoke(req, { id: params['id'] }),
     },
     {
       method: 'GET',
       path: '/api/me',
-      feature: 'tokens',
+      feature: 'apiTokens',
       bearer: true,
       handle: async ({ request }) => {
         const token = await auth.tokens.authenticate(request.headers.get('authorization'))
-        if (!token) throw new AuthError('UNAUTHENTICATED')
+        if (!token) throw new AuthError('unauthenticated')
         return { id: token.user.id, abilities: token.token.abilities }
       },
     },
@@ -266,7 +267,7 @@ function routes(auth: Auth): readonly Route[] {
       handle: ({ req, body }) => {
         const mode = body['mode']
         if (mode !== 'passwordless' && mode !== 'second-factor' && mode !== 'confirm')
-          throw new AuthError('VALIDATION_FAILED', { issues: [{ field: 'mode', code: 'invalid' }] })
+          throw new AuthError('validation_failed', { issues: [{ field: 'mode', code: 'invalid' }] })
         return auth.passkeys.authenticationOptions(req, { mode })
       },
     },
@@ -373,21 +374,21 @@ async function readJson(request: Request): Promise<Json> {
   if (request.method === 'GET') return {}
   const length = Number(request.headers.get('content-length') ?? '0')
   if (length > MAX_BODY)
-    throw new AuthError('VALIDATION_FAILED', { issues: [{ field: 'body', code: 'too_large' }] })
+    throw new AuthError('validation_failed', { issues: [{ field: 'body', code: 'too_large' }] })
   const text = await request.text()
   if (text.length === 0) return {}
   if (text.length > MAX_BODY)
-    throw new AuthError('VALIDATION_FAILED', { issues: [{ field: 'body', code: 'too_large' }] })
+    throw new AuthError('validation_failed', { issues: [{ field: 'body', code: 'too_large' }] })
   if (!(request.headers.get('content-type') ?? '').toLowerCase().startsWith('application/json'))
-    throw new AuthError('VALIDATION_FAILED', { issues: [{ field: 'body', code: 'json_required' }] })
+    throw new AuthError('validation_failed', { issues: [{ field: 'body', code: 'json_required' }] })
   let parsed: unknown
   try {
     parsed = JSON.parse(text)
   } catch {
-    throw new AuthError('VALIDATION_FAILED', { issues: [{ field: 'body', code: 'invalid_json' }] })
+    throw new AuthError('validation_failed', { issues: [{ field: 'body', code: 'invalid_json' }] })
   }
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed))
-    throw new AuthError('VALIDATION_FAILED', {
+    throw new AuthError('validation_failed', {
       issues: [{ field: 'body', code: 'object_required' }],
     })
   return parsed as Json
@@ -451,7 +452,7 @@ export function createAuthHandler(
         route.method !== 'GET' &&
         !sameOrigin(request, auth.config.appUrl)
       )
-        throw new AuthError('FORBIDDEN')
+        throw new AuthError('forbidden')
       const body = await readJson(request)
       const result = await route.handle({ req, body, params, query: url.searchParams, request })
       response = new Response(result === undefined ? null : JSON.stringify(result), {
@@ -462,7 +463,7 @@ export function createAuthHandler(
       if (error instanceof AuthError) response = problem(error)
       else {
         options.onError?.(route.path, error)
-        response = problem(new AuthError('INTERNAL_ERROR'))
+        response = problem(new AuthError('internal_error'))
       }
     }
     jar.applyTo(response.headers)

@@ -77,12 +77,12 @@ export function emailLinkService(deps: AuthDeps): EmailLinkService {
       requireFeature(deps, 'emailLink')
       const email = parseEmail(input.email)
       if (email === undefined)
-        throw new AuthError('VALIDATION_FAILED', { issues: [{ field: 'email', code: 'invalid' }] })
+        throw new AuthError('validation_failed', { issues: [{ field: 'email', code: 'invalid' }] })
       const retry = await deps.limiter.hit([
         [`email-link:ip:${rateLimitSubject(req.ip)}`, limits.emailLinkPerIp],
         [`email-link:acct:${accountKey(deps, email)}`, limits.emailLinkPerAccount],
       ])
-      if (retry !== undefined) throw new AuthError('RATE_LIMITED', { retryAfterSeconds: retry })
+      if (retry !== undefined) throw new AuthError('rate_limited', { retryAfterSeconds: retry })
       // Keep an existing nonce: two requests from one browser must both stay usable there.
       const nonce = parseSecret(req.cookies.get(linkNonceCookie(deps))) ?? randomSecret()
       req.cookies.set(linkNonceCookie(deps), nonce, {
@@ -113,22 +113,22 @@ export function emailLinkService(deps: AuthDeps): EmailLinkService {
     async consume(req, input) {
       requireFeature(deps, 'emailLink')
       const token = parseSecret(input.token)
-      if (token === undefined) throw new AuthError('INVALID_TOKEN')
+      if (token === undefined) throw new AuthError('invalid_token')
       const digest = deps.keys.digest('email-link', token)
       const found = await deps.store.findOneTime(digest, 'email-link')
       if (!found || found.expiresAt <= deps.clock.now() || found.userId === null)
-        throw new AuthError('INVALID_TOKEN')
+        throw new AuthError('invalid_token')
       const nonce = parseSecret(req.cookies.get(linkNonceCookie(deps)))
       const expected = found.payload['nonce'] ?? ''
       if (nonce === undefined || !safeEqual(deps.keys.digest('email-link-nonce', nonce), expected))
-        throw new AuthError('EMAIL_LINK_OTHER_BROWSER')
+        throw new AuthError('email_link_other_browser')
       const consumed = await deps.store.consumeOneTime(digest, 'email-link')
       // Expiry is judged at the consume, not only at the earlier lookup.
       if (!consumed || consumed.userId === null || consumed.expiresAt <= deps.clock.now())
-        throw new AuthError('INVALID_TOKEN')
+        throw new AuthError('invalid_token')
       req.cookies.clear(linkNonceCookie(deps))
       const user = await deps.store.findUserById(consumed.userId)
-      if (!user) throw new AuthError('INVALID_TOKEN')
+      if (!user) throw new AuthError('invalid_token')
       await deps.store.deleteUserOneTime(user.id, 'email-link')
       // The link proves the mailbox: a never-verified account is wiped and verified first (#114).
       const proof = await proveMailbox(deps, req, user)

@@ -8,7 +8,7 @@ const COOKIE = 'strutvane_session'
 
 describe.each(STORES)('email + password (%s store)', (store) => {
   describe('registration', () => {
-    it('is off by default: a 404-style NOT_FOUND, never 403', async () => {
+    it('is off by default: a 404-style not_found, never 403', async () => {
       const h = harness({ store })
       await rejectsWith(
         () =>
@@ -17,7 +17,7 @@ describe.each(STORES)('email + password (%s store)', (store) => {
             email: 'x@y.io',
             password: PASSWORD,
           }),
-        'NOT_FOUND',
+        'not_found',
       )
     })
 
@@ -68,7 +68,7 @@ describe.each(STORES)('email + password (%s store)', (store) => {
             email: 'Ada@Acme.test',
             password: PASSWORD,
           }),
-        'EMAIL_TAKEN',
+        'email_taken',
       )
     })
 
@@ -83,7 +83,7 @@ describe.each(STORES)('email + password (%s store)', (store) => {
       ])
         await rejectsWith(
           () => h.auth.passwords.register(new Browser().req, input),
-          'VALIDATION_FAILED',
+          'validation_failed',
         )
       await rejectsWith(
         () =>
@@ -92,7 +92,7 @@ describe.each(STORES)('email + password (%s store)', (store) => {
             email: 'a@b.io',
             password: 'short',
           }),
-        'WEAK_PASSWORD',
+        'weak_password',
       )
     })
   })
@@ -129,7 +129,7 @@ describe.each(STORES)('email + password (%s store)', (store) => {
         }
       }
       expect(errors.map((e) => [e.code, e.message, e.status, e.options])).toEqual(
-        Array(3).fill(['INVALID_CREDENTIALS', AUTH_MESSAGES.INVALID_CREDENTIALS, 422, {}]),
+        Array(3).fill(['invalid_credentials', AUTH_MESSAGES.invalid_credentials, 422, {}]),
       )
     })
 
@@ -155,7 +155,7 @@ describe.each(STORES)('email + password (%s store)', (store) => {
         await rejectsWith(
           () =>
             h.auth.passwords.login(new Browser().req, { email, password: 'wrong password here' }),
-          'INVALID_CREDENTIALS',
+          'invalid_credentials',
         )
         expect(calls).toHaveLength(1)
       }
@@ -228,7 +228,7 @@ describe.each(STORES)('email + password (%s store)', (store) => {
       ])
         await rejectsWith(
           () => h.auth.passwords.login(new Browser().req, input),
-          'VALIDATION_FAILED',
+          'validation_failed',
         )
     })
   })
@@ -244,7 +244,7 @@ describe.each(STORES)('email + password (%s store)', (store) => {
               email: `x${i}@acme.test`,
               password: 'wrong password!',
             }),
-          'INVALID_CREDENTIALS',
+          'invalid_credentials',
         )
       const limited = await rejectsWith(
         () =>
@@ -252,7 +252,7 @@ describe.each(STORES)('email + password (%s store)', (store) => {
             email: 'ada@acme.test',
             password: PASSWORD,
           }),
-        'RATE_LIMITED',
+        'rate_limited',
       )
       expect(limited.retryAfterSeconds).toBeGreaterThan(0)
       expect(
@@ -274,7 +274,7 @@ describe.each(STORES)('email + password (%s store)', (store) => {
               email: `x${i}@acme.test`,
               password: 'wrong password!',
             }),
-          'INVALID_CREDENTIALS',
+          'invalid_credentials',
         )
       await rejectsWith(
         () =>
@@ -282,7 +282,7 @@ describe.each(STORES)('email + password (%s store)', (store) => {
             email: 'y@acme.test',
             password: 'wrong password!',
           }),
-        'RATE_LIMITED',
+        'rate_limited',
       )
     })
 
@@ -295,7 +295,7 @@ describe.each(STORES)('email + password (%s store)', (store) => {
               email: `x${i}@acme.test`,
               password: 'wrong password!',
             }),
-          'INVALID_CREDENTIALS',
+          'invalid_credentials',
         )
       await rejectsWith(
         () =>
@@ -303,7 +303,7 @@ describe.each(STORES)('email + password (%s store)', (store) => {
             email: 'y@acme.test',
             password: 'wrong password!',
           }),
-        'RATE_LIMITED',
+        'rate_limited',
       )
     })
 
@@ -317,7 +317,7 @@ describe.each(STORES)('email + password (%s store)', (store) => {
               email: 'ada@acme.test',
               password: 'wrong password!',
             }),
-          'INVALID_CREDENTIALS',
+          'invalid_credentials',
         )
       // Case and spacing variants of the email are the SAME account key.
       await rejectsWith(
@@ -326,7 +326,7 @@ describe.each(STORES)('email + password (%s store)', (store) => {
             email: ' ADA@ACME.TEST',
             password: PASSWORD,
           }),
-        'RATE_LIMITED',
+        'rate_limited',
       )
     })
 
@@ -336,7 +336,7 @@ describe.each(STORES)('email + password (%s store)', (store) => {
       const fail = (email: string, ip: string) =>
         rejectsWith(
           () => h.auth.passwords.login(new Browser(ip).req, { email, password: 'wrong password!' }),
-          'INVALID_CREDENTIALS',
+          'invalid_credentials',
         )
       for (let i = 0; i < 5; i++) {
         await fail('ada@acme.test', `198.51.100.${i}`)
@@ -348,7 +348,7 @@ describe.each(STORES)('email + password (%s store)', (store) => {
             email: 'ada@acme.test',
             password: PASSWORD,
           }),
-        'RATE_LIMITED',
+        'rate_limited',
       )
       const ghost = await rejectsWith(
         () =>
@@ -356,7 +356,7 @@ describe.each(STORES)('email + password (%s store)', (store) => {
             email: 'ghost@acme.test',
             password: PASSWORD,
           }),
-        'RATE_LIMITED',
+        'rate_limited',
       )
       expect(known.retryAfterSeconds).toBe(60)
       expect(ghost.retryAfterSeconds).toBe(60)
@@ -370,7 +370,7 @@ describe.each(STORES)('email + password (%s store)', (store) => {
             email: 'ada@acme.test',
             password: PASSWORD,
           }),
-        'RATE_LIMITED',
+        'rate_limited',
       )
       expect(longer.retryAfterSeconds).toBe(120)
       h.clock.advance(121_000)
@@ -475,7 +475,7 @@ describe.each(STORES)('email + password (%s store)', (store) => {
       expect(JSON.stringify(list)).not.toContain(phone.get(COOKIE) ?? 'x')
       await rejectsWith(
         () => h.auth.sessions.revokeOthers(laptop.req),
-        'PASSWORD_CONFIRMATION_REQUIRED',
+        'password_confirmation_required',
       )
       await h.auth.passwords.confirm(laptop.req, { password: PASSWORD })
       const before = laptop.get(COOKIE)
@@ -490,7 +490,7 @@ describe.each(STORES)('email + password (%s store)', (store) => {
       expect(await h.auth.state(tablet.req)).toBeNull()
       await rejectsWith(
         () => h.auth.sessions.revoke(laptop.req, { handle: 'ffffffffffffffff' }),
-        'NOT_FOUND',
+        'not_found',
       )
     })
 
@@ -500,7 +500,7 @@ describe.each(STORES)('email + password (%s store)', (store) => {
       const b = await h.signedIn('ada@acme.test')
       await rejectsWith(
         () => h.auth.passwords.confirm(b.req, { password: 'wrong password!' }),
-        'INVALID_CREDENTIALS',
+        'invalid_credentials',
       )
       await h.auth.passwords.confirm(b.req, { password: PASSWORD })
       await h.auth.passwords.confirm(b.req, { password: PASSWORD })
@@ -510,12 +510,12 @@ describe.each(STORES)('email + password (%s store)', (store) => {
         await h.auth.state(b.req)
       }
       h.clock.advance(1)
-      await rejectsWith(() => h.auth.sessions.revokeOthers(b.req), 'PASSWORD_CONFIRMATION_REQUIRED')
+      await rejectsWith(() => h.auth.sessions.revokeOthers(b.req), 'password_confirmation_required')
       for (let i = 0; i < 5; i++)
         await h.auth.passwords.confirm(b.req, { password: 'wrong' }).catch(() => undefined)
       await rejectsWith(
         () => h.auth.passwords.confirm(b.req, { password: PASSWORD }),
-        'RATE_LIMITED',
+        'rate_limited',
       )
     })
 
@@ -532,7 +532,7 @@ describe.each(STORES)('email + password (%s store)', (store) => {
             current: 'wrong password!',
             password: 'brand new passphrase',
           }),
-        'INVALID_CREDENTIALS',
+        'invalid_credentials',
       )
       const before = me.get(COOKIE)
       await h.auth.passwords.change(me.req, { current: PASSWORD, password: 'brand new passphrase' })
@@ -545,13 +545,13 @@ describe.each(STORES)('email + password (%s store)', (store) => {
             token: oldLink,
             password: 'attacker sets this',
           }),
-        'INVALID_TOKEN',
+        'invalid_token',
       )
       expect((await h.mail('password-changed')).to).toBe(user.email)
       expect(h.eventsOf('password.changed')).toEqual([expect.objectContaining({ via: 'settings' })])
       await rejectsWith(
         () => h.auth.passwords.login(new Browser().req, { email: user.email, password: PASSWORD }),
-        'INVALID_CREDENTIALS',
+        'invalid_credentials',
       )
     })
 
@@ -566,7 +566,7 @@ describe.each(STORES)('email + password (%s store)', (store) => {
               current: `guess number ${i}!`,
               password: 'thief picks this one',
             }),
-          'INVALID_CREDENTIALS',
+          'invalid_credentials',
         )
       await rejectsWith(
         () =>
@@ -574,11 +574,11 @@ describe.each(STORES)('email + password (%s store)', (store) => {
             current: PASSWORD,
             password: 'thief picks this one',
           }),
-        'RATE_LIMITED',
+        'rate_limited',
       )
       await rejectsWith(
         () => h.auth.passwords.confirm(thief.req, { password: PASSWORD }),
-        'RATE_LIMITED',
+        'rate_limited',
       )
     })
 
@@ -609,19 +609,19 @@ describe.each(STORES)('email + password (%s store)', (store) => {
       const huge = 'x'.repeat(1_000_000)
       await rejectsWith(
         () => h.auth.passwords.change(b.req, { current: huge, password: 'brand new passphrase' }),
-        'INVALID_CREDENTIALS',
+        'invalid_credentials',
       )
       await rejectsWith(
         () => h.auth.passwords.confirm(b.req, { password: huge }),
-        'INVALID_CREDENTIALS',
+        'invalid_credentials',
       )
       await rejectsWith(
         () => h.auth.passwords.login(new Browser().req, { email: user.email, password: huge }),
-        'VALIDATION_FAILED',
+        'validation_failed',
       )
       await rejectsWith(
         () => h.auth.system.createUser({ name: 'x', email: 'x@acme.test', password: huge }),
-        'WEAK_PASSWORD',
+        'weak_password',
       )
       expect(derives).toBe(0)
     })

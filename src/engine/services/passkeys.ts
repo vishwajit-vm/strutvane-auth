@@ -119,7 +119,7 @@ const view = (p: PasskeyRecord): PasskeyView => ({
 function parseName(value: unknown, fallback: string): string {
   if (value === undefined) return fallback
   if (typeof value !== 'string' || value.trim().length < 1 || value.trim().length > 100)
-    throw new AuthError('VALIDATION_FAILED', { issues: [{ field: 'name', code: 'invalid' }] })
+    throw new AuthError('validation_failed', { issues: [{ field: 'name', code: 'invalid' }] })
   return value.trim()
 }
 
@@ -142,7 +142,7 @@ export function passkeyService(deps: AuthDeps): PasskeyService {
   const nonceCookie = cookieName(deps, 'webauthn')
   const rp = (): PasskeyConfig => {
     const config = deps.config.passkeys
-    if (!config) throw new AuthError('NOT_FOUND')
+    if (!config) throw new AuthError('not_found')
     return config
   }
   const userHandle = (userId: string): Uint8Array<ArrayBuffer> =>
@@ -174,12 +174,12 @@ export function passkeyService(deps: AuthDeps): PasskeyService {
   const takeChallenge = async (req: AuthRequest, purpose: OneTimePurpose) => {
     const nonce = parseSecret(req.cookies.get(nonceCookie))
     req.cookies.clear(nonceCookie)
-    if (nonce === undefined) throw new AuthError('INVALID_TOKEN')
+    if (nonce === undefined) throw new AuthError('invalid_token')
     const record = await deps.store.consumeOneTime(
       deps.keys.digest('webauthn-nonce', nonce),
       purpose,
     )
-    if (!record || record.expiresAt <= deps.clock.now()) throw new AuthError('INVALID_TOKEN')
+    if (!record || record.expiresAt <= deps.clock.now()) throw new AuthError('invalid_token')
     return record
   }
 
@@ -216,9 +216,9 @@ export function passkeyService(deps: AuthDeps): PasskeyService {
     async register(req, input) {
       const active = await settings(req)
       const challenge = await takeChallenge(req, 'webauthn-registration')
-      if (challenge.userId !== active.user.id) throw new AuthError('INVALID_TOKEN')
+      if (challenge.userId !== active.user.id) throw new AuthError('invalid_token')
       if (!isCredentialJson(input.response))
-        throw new AuthError('VALIDATION_FAILED', {
+        throw new AuthError('validation_failed', {
           issues: [{ field: 'response', code: 'invalid' }],
         })
       let verified: Awaited<ReturnType<typeof verifyRegistrationResponse>>
@@ -231,11 +231,11 @@ export function passkeyService(deps: AuthDeps): PasskeyService {
           requireUserVerification: true,
         })
       } catch {
-        throw new AuthError('INVALID_CODE')
+        throw new AuthError('invalid_code')
       }
-      if (!verified.verified) throw new AuthError('INVALID_CODE')
+      if (!verified.verified) throw new AuthError('invalid_code')
       const { credential, credentialBackedUp } = verified.registrationInfo
-      if (await deps.store.findPasskeyByCredentialId(credential.id)) throw new AuthError('CONFLICT')
+      if (await deps.store.findPasskeyByCredentialId(credential.id)) throw new AuthError('conflict')
       const count = (await deps.store.listPasskeys(active.user.id)).length
       const record: PasskeyRecord = {
         id: newId(),
@@ -259,16 +259,16 @@ export function passkeyService(deps: AuthDeps): PasskeyService {
       const retry = await deps.limiter.hit([
         [`passkey:ip:${rateLimitSubject(req.ip)}`, deps.config.limits.passkeyPerIp],
       ])
-      if (retry !== undefined) throw new AuthError('RATE_LIMITED', { retryAfterSeconds: retry })
+      if (retry !== undefined) throw new AuthError('rate_limited', { retryAfterSeconds: retry })
       let userId: string | null = null
       if (input.mode === 'second-factor') {
         const pending = await readSession(deps, req)
-        if (pending?.state !== 'two-factor') throw new AuthError('UNAUTHENTICATED')
+        if (pending?.state !== 'two-factor') throw new AuthError('unauthenticated')
         userId = pending.userId
       } else if (input.mode === 'confirm') {
         userId = (await settings(req)).user.id
       } else if (input.mode !== 'passwordless') {
-        throw new AuthError('VALIDATION_FAILED', { issues: [{ field: 'mode', code: 'invalid' }] })
+        throw new AuthError('validation_failed', { issues: [{ field: 'mode', code: 'invalid' }] })
       }
       const allow = userId === null ? [] : await deps.store.listPasskeys(userId)
       const options = await generateAuthenticationOptions({
@@ -288,20 +288,20 @@ export function passkeyService(deps: AuthDeps): PasskeyService {
       const challenge = await takeChallenge(req, 'webauthn-authentication')
       const mode = challenge.payload['mode']
       if (!isCredentialJson(input.response))
-        throw new AuthError('VALIDATION_FAILED', {
+        throw new AuthError('validation_failed', {
           issues: [{ field: 'response', code: 'invalid' }],
         })
       const response = input.response as unknown as AuthenticationResponseJSON
       const passkey = await deps.store.findPasskeyByCredentialId(response.id)
       // A second-factor or confirm ceremony must be answered with THIS user's passkey.
       if (!passkey || (challenge.userId !== null && passkey.userId !== challenge.userId))
-        throw new AuthError('INVALID_CODE')
+        throw new AuthError('invalid_code')
       const handle = response.response.userHandle
       if (
         handle !== undefined &&
         handle !== Buffer.from(userHandle(passkey.userId)).toString('base64url')
       )
-        throw new AuthError('INVALID_CODE')
+        throw new AuthError('invalid_code')
       let verified: Awaited<ReturnType<typeof verifyAuthenticationResponse>>
       try {
         verified = await verifyAuthenticationResponse({
@@ -318,9 +318,9 @@ export function passkeyService(deps: AuthDeps): PasskeyService {
           requireUserVerification: mode !== 'second-factor',
         })
       } catch {
-        throw new AuthError('INVALID_CODE')
+        throw new AuthError('invalid_code')
       }
-      if (!verified.verified) throw new AuthError('INVALID_CODE')
+      if (!verified.verified) throw new AuthError('invalid_code')
       const now = deps.clock.now()
       // Compare-and-set on the counter the verification used: of two concurrent sign-ins with the
       // same counter (a clone racing the original), only one may record it (CONSISTENCY #117).
@@ -329,20 +329,20 @@ export function passkeyService(deps: AuthDeps): PasskeyService {
         lastUsedAt: now,
         backedUp: verified.authenticationInfo.credentialBackedUp,
       })
-      if (!advanced) throw new AuthError('INVALID_CODE')
+      if (!advanced) throw new AuthError('invalid_code')
       const user = await deps.store.findUserById(passkey.userId)
-      if (!user) throw new AuthError('INVALID_CODE')
+      if (!user) throw new AuthError('invalid_code')
 
       if (mode === 'confirm') {
         const active = await settings(req)
-        if (active.user.id !== user.id) throw new AuthError('INVALID_CODE')
+        if (active.user.id !== user.id) throw new AuthError('invalid_code')
         await deps.store.updateSession(active.session.digest, { passwordConfirmedAt: now })
         return { status: 'confirmed' }
       }
       if (mode === 'second-factor') {
         const pending = await readSession(deps, req)
         if (pending?.state !== 'two-factor' || pending.userId !== user.id)
-          throw new AuthError('UNAUTHENTICATED')
+          throw new AuthError('unauthenticated')
         return completeSecondFactor(deps, req, pending, 'passkey')
       }
       // Passwordless: user verification already made this two factors. Do not route through the
@@ -364,7 +364,7 @@ export function passkeyService(deps: AuthDeps): PasskeyService {
       const active = await settings(req)
       const passkeys = await deps.store.listPasskeys(active.user.id)
       const target = passkeys.find((p) => p.id === input.id)
-      if (!target) throw new AuthError('NOT_FOUND')
+      if (!target) throw new AuthError('not_found')
       await deps.store.updatePasskey(target.id, { name: parseName(input.name, target.name) })
     },
 
@@ -375,7 +375,7 @@ export function passkeyService(deps: AuthDeps): PasskeyService {
         typeof input.id !== 'string' ||
         !(await deps.store.deletePasskey(active.user.id, input.id))
       )
-        throw new AuthError('NOT_FOUND')
+        throw new AuthError('not_found')
       await emit(deps, req, {
         type: 'passkey.removed',
         userId: active.user.id,

@@ -30,7 +30,7 @@ export interface LockoutOptions {
  * @example
  * ```ts
  * const wait = await lockout.lockedFor(key)
- * if (wait !== undefined) throw new AuthError('RATE_LIMITED', { retryAfterSeconds: wait })
+ * if (wait !== undefined) throw new AuthError('rate_limited', { retryAfterSeconds: wait })
  * ```
  */
 export interface Lockout {

@@ -3,7 +3,7 @@
  *
  * The `features` block mirrors the installer's sign-in questions (blueprint §2.1, questions 5–12)
  * and Fortify's features array. A feature that is off has NO routes and its service methods throw
- * `NOT_FOUND`, so it is indistinguishable from a feature that never existed (404, never 403).
+ * `not_found`, so it is indistinguishable from a feature that never existed (404, never 403).
  *
  * Defaults follow the security review: public registration is OFF (F-02), sign-in by email and
  * password is on, everything optional is off until the installer (or the developer) turns it on.
@@ -11,26 +11,47 @@
  * @module
  */
 
-/** The switches. Each maps to installer answers; unknown keys are compile errors. */
+/**
+ * The switches, with the names used everywhere: installer, `config/auth.ts`, docs and routes
+ * (CONSISTENCY #25 and #107). Each maps to installer answers; unknown keys are compile errors.
+ */
 export interface AuthFeatures {
-  /** Email + password sign-in (question 5). Password reset is part of it, as in Fortify. */
-  readonly passwordLogin: boolean
+  /** Email + password sign-in (question 5). `false` with `emailLink: true` = "email link only" (#107). */
+  readonly password: boolean
   /** Public sign-up (question 6). Off by default: B2B apps are invite-only (review F-02). */
   readonly registration: boolean
   /** Signed email-verification links (question 6). */
   readonly emailVerification: boolean
-  /** Passwordless email links (question 5, "email link only"). */
-  readonly emailLink: boolean
+  /**
+   * Password reset. Always on wherever passwords are (it can't be switched off on its own, #25):
+   * it resolves to the value of `password`.
+   */
+  readonly passwordReset: boolean
+  /**
+   * "Confirm your password" before sensitive actions (2FA settings, tokens, passkeys, sessions,
+   * impersonation), within a 3-hour window (Laravel's `password.confirm`). On by default.
+   */
+  readonly passwordConfirmation: boolean
   /** TOTP two-factor with recovery codes (question 6). */
   readonly twoFactor: boolean
   /** Passkeys (WebAuthn), as a first factor and as a second factor (question 6). */
   readonly passkeys: boolean
+  /** Passwordless email links (question 5, "email link only"). */
+  readonly emailLink: boolean
   /** Personal access tokens (question 9). */
-  readonly tokens: boolean
+  readonly apiTokens: boolean
   /** Teams (question 11). */
   readonly teams: boolean
   /** Admin impersonation. */
   readonly impersonation: boolean
+}
+
+/**
+ * The `features` block `config/auth.ts` may write. `passwordReset` can only be `true` (it follows
+ * `password`); every other switch is a boolean.
+ */
+export type AuthFeaturesInput = Partial<Omit<AuthFeatures, 'passwordReset'>> & {
+  readonly passwordReset?: true
 }
 
 /** The starting role presets (question 10). Role NAMES live in code; only assignments are rows. */
@@ -62,7 +83,7 @@ export interface PasskeyConfig {
 export interface AuthConfigInput {
   /** The public base URL; links are built on it and `https` turns on `__Host-` cookies. */
   readonly appUrl: string
-  readonly features?: Partial<AuthFeatures>
+  readonly features?: AuthFeaturesInput
   readonly passwords?: {
     /** Minimum length (default 12; Laravel's is 8, v1's non-regression list keeps 12). */
     readonly min?: number
@@ -173,13 +194,15 @@ export interface AuthConfig {
 
 /** Defaults for {@link AuthFeatures}. */
 export const DEFAULT_FEATURES: AuthFeatures = Object.freeze({
-  passwordLogin: true,
+  password: true,
   registration: false,
   emailVerification: false,
-  emailLink: false,
+  passwordReset: true,
+  passwordConfirmation: true,
   twoFactor: false,
   passkeys: false,
-  tokens: false,
+  emailLink: false,
+  apiTokens: false,
   teams: false,
   impersonation: false,
 })
@@ -276,7 +299,15 @@ export function defineAuthConfig(input: AuthConfigInput): AuthConfig {
   // Every mailed link is built on appUrl; `javascript:`/`file:` URLs have origin "null".
   if (url.protocol !== 'https:' && url.protocol !== 'http:')
     throw new TypeError('auth config: appUrl must be an http(s) URL')
-  const features: AuthFeatures = { ...DEFAULT_FEATURES, ...input.features }
+  const requested: Partial<AuthFeatures> = input.features ?? {}
+  // A JavaScript config (no compile-time check) could still pass `passwordReset: false`; resetting
+  // a forgotten password is never optional where passwords exist (#25), so refuse it at boot.
+  if ((requested as { readonly passwordReset?: unknown }).passwordReset === false)
+    throw new TypeError(
+      'auth config: features.passwordReset is always on with passwords; turn off `password` instead',
+    )
+  const merged = { ...DEFAULT_FEATURES, ...requested }
+  const features: AuthFeatures = { ...merged, passwordReset: merged.password }
   // An email link only signs in the browser holding its nonce cookie. Over plain http that cookie
   // is neither `__Host-` nor Secure, so anyone on the path (or a sibling host) can plant their own
   // nonce and log the victim into the attacker's account (CONSISTENCY #117). HTTPS outside local.
@@ -288,9 +319,13 @@ export function defineAuthConfig(input: AuthConfigInput): AuthConfig {
     throw new TypeError(
       'auth config: features.passkeys needs a `passkeys: { rpId, rpName, origins }` block',
     )
-  if (features.impersonation && !features.passwordLogin && !features.passkeys)
+  if (features.impersonation && !features.passwordConfirmation)
     throw new TypeError(
-      'auth config: impersonation needs passwordLogin or passkeys (admins must confirm first)',
+      'auth config: impersonation needs passwordConfirmation (admins confirm before impersonating)',
+    )
+  if (features.impersonation && !features.password && !features.passkeys)
+    throw new TypeError(
+      'auth config: impersonation needs password or passkeys (admins must confirm first)',
     )
   const min = input.passwords?.min ?? 12
   const max = input.passwords?.max ?? 256

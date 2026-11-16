@@ -41,7 +41,7 @@ describe.each(STORES)('storage failures fail closed (%s store)', (store) => {
       'deleteUserTokens',
       'updateUser',
     ] as const) {
-      const h = harness({ store, config: { features: { tokens: true } } })
+      const h = harness({ store, config: { features: { apiTokens: true } } })
       const user = await h.user()
       const thief = await h.signedIn(user.email, '192.0.2.66')
       const { plainText } = await h.auth.tokens.create(thief.req, { name: 'loot' })

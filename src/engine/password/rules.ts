@@ -9,7 +9,7 @@
  * @module
  */
 import { createHash } from 'node:crypto'
-import { AuthError, type AuthIssue } from '../errors.ts'
+import { AuthError, type AuthIssueInput } from '../errors.ts'
 import type { AuthLogger } from '../ports/events.ts'
 
 /** What a password check says. `unknown` means the check could not run (a service was down). */
@@ -124,7 +124,7 @@ export interface PasswordRuleOptions {
 }
 
 /**
- * Throw `WEAK_PASSWORD` (with field issues) unless `password` passes the rules and the check.
+ * Throw `weak_password` (with field issues) unless `password` passes the rules and the check.
  *
  * Why fail OPEN by default on an unknown verdict: a third-party outage would otherwise stop every
  * sign-up and reset. The warning makes it visible; strict apps set `onUnknown: 'closed'`.
@@ -135,22 +135,22 @@ export async function assertPasswordAllowed(
 ): Promise<string> {
   const field = options.field ?? 'password'
   if (typeof password !== 'string')
-    throw new AuthError('VALIDATION_FAILED', { issues: [{ field, code: 'required' }] })
+    throw new AuthError('validation_failed', { issues: [{ field, code: 'required' }] })
   const length = passwordLength(password, options.max) ?? Number.POSITIVE_INFINITY
-  const issues: AuthIssue[] = []
+  const issues: AuthIssueInput[] = []
   if (length < options.min) issues.push({ field, code: 'too_short' })
   if (length > options.max) issues.push({ field, code: 'too_long' })
-  if (issues.length > 0) throw new AuthError('WEAK_PASSWORD', { issues })
+  if (issues.length > 0) throw new AuthError('weak_password', { issues })
   if (options.check) {
     const verdict = await options.check(password)
     if (verdict === 'compromised')
-      throw new AuthError('WEAK_PASSWORD', { issues: [{ field, code: 'compromised' }] })
+      throw new AuthError('weak_password', { issues: [{ field, code: 'compromised' }] })
     if (verdict === 'unknown') {
       options.logger?.warn('auth: the password check could not run', {
         failClosed: options.onUnknown === 'closed',
       })
       if (options.onUnknown === 'closed')
-        throw new AuthError('WEAK_PASSWORD', { issues: [{ field, code: 'check_unavailable' }] })
+        throw new AuthError('weak_password', { issues: [{ field, code: 'check_unavailable' }] })
     }
   }
   return password

@@ -180,11 +180,11 @@ describe('password rules and checks', () => {
     logger: undefined,
   }
   it('enforces length and the common list', async () => {
-    await rejectsWith(() => assertPasswordAllowed('short', base), 'WEAK_PASSWORD')
-    await rejectsWith(() => assertPasswordAllowed('x'.repeat(257), base), 'WEAK_PASSWORD')
-    await rejectsWith(() => assertPasswordAllowed('Password1234', base), 'WEAK_PASSWORD')
-    await rejectsWith(() => assertPasswordAllowed('aaaaaaaaaaaaaaaa', base), 'WEAK_PASSWORD')
-    await rejectsWith(() => assertPasswordAllowed(123456789012, base), 'VALIDATION_FAILED')
+    await rejectsWith(() => assertPasswordAllowed('short', base), 'weak_password')
+    await rejectsWith(() => assertPasswordAllowed('x'.repeat(257), base), 'weak_password')
+    await rejectsWith(() => assertPasswordAllowed('Password1234', base), 'weak_password')
+    await rejectsWith(() => assertPasswordAllowed('aaaaaaaaaaaaaaaa', base), 'weak_password')
+    await rejectsWith(() => assertPasswordAllowed(123456789012, base), 'validation_failed')
     expect(await assertPasswordAllowed('a perfectly fine phrase', base)).toBe(
       'a perfectly fine phrase',
     )
@@ -214,7 +214,7 @@ describe('password rules and checks', () => {
           onUnknown: 'closed',
           logger,
         }),
-      'WEAK_PASSWORD',
+      'weak_password',
     )
   })
 })
@@ -354,7 +354,7 @@ describe('config', () => {
   it('defaults are secure: registration off, 12-char minimum, 60/15 minute links, 3 h confirmation', () => {
     const c = defineAuthConfig({ appUrl: 'https://app.example.com/some/path' })
     expect(c.features.registration).toBe(false)
-    expect(c.features.passwordLogin).toBe(true)
+    expect(c.features.password).toBe(true)
     expect(c.passwords.min).toBe(12)
     expect(c.links.passwordResetMs).toBe(60 * 60_000)
     expect(c.links.emailLinkMs).toBe(15 * 60_000)

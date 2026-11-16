@@ -23,7 +23,7 @@ import {
 } from './helpers/harness.ts'
 
 const config = {
-  features: { registration: true, emailVerification: true, emailLink: true, tokens: true },
+  features: { registration: true, emailVerification: true, emailLink: true, apiTokens: true },
 }
 const ATTACKER_PASSWORD = 'attacker knows this one'
 const OWNER_PASSWORD = 'the real owner picks this'
@@ -78,13 +78,13 @@ describe.each(STORES)('account pre-hijacking (%s store)', (store) => {
           email: 'victim@acme.test',
           password: 'some wrong password',
         }),
-      'INVALID_CREDENTIALS',
+      'invalid_credentials',
     )
     const b = new Browser()
     await rejectsWith(
       () =>
         h.auth.passwords.login(b.req, { email: 'victim@acme.test', password: ATTACKER_PASSWORD }),
-      'EMAIL_NOT_VERIFIED',
+      'email_not_verified',
     )
     expect(b.jar.size).toBe(0)
     // The refusal re-sends the verification mail (throttled), since there is no session to ask from.
@@ -96,7 +96,7 @@ describe.each(STORES)('account pre-hijacking (%s store)', (store) => {
           email: 'victim@acme.test',
           password: ATTACKER_PASSWORD,
         }),
-      'EMAIL_NOT_VERIFIED',
+      'email_not_verified',
     )
     await h.auth.idle()
     expect(h.mails.filter((m) => m.kind === 'verify-email')).toHaveLength(2)
@@ -122,7 +122,7 @@ describe.each(STORES)('account pre-hijacking (%s store)', (store) => {
           email: 'victim@acme.test',
           password: ATTACKER_PASSWORD,
         }),
-      'INVALID_CREDENTIALS',
+      'invalid_credentials',
     )
     if (result.status !== 'set-password') return
     await h.auth.passwordReset.reset(new Browser().req, {
@@ -165,7 +165,7 @@ describe.each(STORES)('account pre-hijacking (%s store)', (store) => {
           email: 'victim@acme.test',
           password: ATTACKER_PASSWORD,
         }),
-      'INVALID_CREDENTIALS',
+      'invalid_credentials',
     )
     expect(result.setPasswordToken).toBeDefined()
     await h.auth.passwordReset.reset(new Browser().req, {
@@ -221,7 +221,7 @@ describe.each(STORES)('account pre-hijacking (%s store)', (store) => {
           email: 'ada@acme.test',
           password: OWNER_PASSWORD,
         }),
-      'INVALID_CREDENTIALS',
+      'invalid_credentials',
     )
   })
 
@@ -251,7 +251,7 @@ describe.each(STORES)('account pre-hijacking (%s store)', (store) => {
           email: 'victim@acme.test',
           password: ATTACKER_PASSWORD,
         }),
-      'INVALID_CREDENTIALS',
+      'invalid_credentials',
     )
   })
 

@@ -54,18 +54,18 @@ export function impersonationService(deps: AuthDeps): ImpersonationService {
     async start(req, input) {
       requireFeature(deps, 'impersonation')
       const active = await requireActive(deps, req)
-      if (active.session.impersonatorId !== null) throw new AuthError('FORBIDDEN')
+      if (active.session.impersonatorId !== null) throw new AuthError('forbidden')
       if (!(await deps.store.listUserRoles(active.user.id)).includes(ADMIN_ROLE))
-        throw new AuthError('FORBIDDEN')
-      requireRecentConfirmation(deps, active)
-      if (typeof input.userId !== 'string') throw new AuthError('NOT_FOUND')
+        throw new AuthError('forbidden')
+      requireRecentConfirmation(deps, active, { always: true })
+      if (typeof input.userId !== 'string') throw new AuthError('not_found')
       const target = await deps.store.findUserById(input.userId)
-      if (!target) throw new AuthError('NOT_FOUND')
+      if (!target) throw new AuthError('not_found')
       if (
         target.id === active.user.id ||
         (await deps.store.listUserRoles(target.id)).includes(ADMIN_ROLE)
       )
-        throw new AuthError('FORBIDDEN')
+        throw new AuthError('forbidden')
       await startSession(deps, req, {
         userId: target.id,
         state: 'active',
@@ -84,7 +84,7 @@ export function impersonationService(deps: AuthDeps): ImpersonationService {
     async stop(req) {
       requireFeature(deps, 'impersonation')
       const session = await readSession(deps, req)
-      if (!session || session.impersonatorId === null) throw new AuthError('NOT_FOUND')
+      if (!session || session.impersonatorId === null) throw new AuthError('not_found')
       // Recorded while the impersonation session still exists, so the actor is the admin.
       await emit(deps, req, {
         type: 'impersonation.stopped',

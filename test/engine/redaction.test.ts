@@ -21,7 +21,7 @@ describe('no secrets in events or logs', () => {
           emailLink: true,
           twoFactor: true,
           passkeys: true,
-          tokens: true,
+          apiTokens: true,
           teams: true,
           impersonation: true,
         },

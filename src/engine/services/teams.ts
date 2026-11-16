@@ -14,7 +14,7 @@
  * - **Switching** teams is a privilege change, so the session id rotates.
  * - **No grants while impersonating:** invite, role changes and accepting are refused, so an
  *   impersonating admin cannot leave with access to the user's teams.
- * - Teams a user is not in answer `NOT_FOUND`, never `FORBIDDEN`: ids do not confirm existence.
+ * - Teams a user is not in answer `not_found`, never `forbidden`: ids do not confirm existence.
  *
  * @module
  */
@@ -101,7 +101,7 @@ export interface TeamService {
 
 function parseTeamName(value: unknown): string {
   if (typeof value !== 'string' || value.trim().length < 1 || value.trim().length > 100)
-    throw new AuthError('VALIDATION_FAILED', { issues: [{ field: 'name', code: 'invalid' }] })
+    throw new AuthError('validation_failed', { issues: [{ field: 'name', code: 'invalid' }] })
   return value.trim()
 }
 
@@ -143,27 +143,27 @@ export function teamService(deps: AuthDeps): TeamService {
     return active
   }
 
-  /** The caller's membership of `teamId`; NOT_FOUND when they are not a member (or it is not an id). */
+  /** The caller's membership of `teamId`; not_found when they are not a member (or it is not an id). */
   const membership = async (
     active: ActiveSession,
     teamId: unknown,
   ): Promise<{ team: TeamRecord; member: MemberRecord }> => {
-    if (typeof teamId !== 'string') throw new AuthError('NOT_FOUND')
+    if (typeof teamId !== 'string') throw new AuthError('not_found')
     const member = await deps.store.findMember(teamId, active.user.id)
     const team = member ? await deps.store.findTeam(teamId) : undefined
-    if (!member || !team) throw new AuthError('NOT_FOUND')
+    if (!member || !team) throw new AuthError('not_found')
     return { team, member }
   }
 
   const adminOf = async (active: ActiveSession, teamId: unknown) => {
     const m = await membership(active, teamId)
-    if (m.member.role !== 'admin') throw new AuthError('FORBIDDEN')
+    if (m.member.role !== 'admin') throw new AuthError('forbidden')
     return m
   }
 
   const parseRole = (value: unknown): string => {
     if (typeof value !== 'string' || !roles.includes(value))
-      throw new AuthError('VALIDATION_FAILED', { issues: [{ field: 'role', code: 'invalid' }] })
+      throw new AuthError('validation_failed', { issues: [{ field: 'role', code: 'invalid' }] })
     return value
   }
 
@@ -220,7 +220,7 @@ export function teamService(deps: AuthDeps): TeamService {
       const { team } = await adminOf(active, input.teamId)
       const email = parseEmail(input.email)
       if (email === undefined)
-        throw new AuthError('VALIDATION_FAILED', { issues: [{ field: 'email', code: 'invalid' }] })
+        throw new AuthError('validation_failed', { issues: [{ field: 'email', code: 'invalid' }] })
       const role = parseRole(input.role)
       // Every invitation mails an address the inviter chose, and every user admins a personal team,
       // so without a budget any account is a free mail cannon. Keyed on the inviting ACCOUNT, so
@@ -228,10 +228,10 @@ export function teamService(deps: AuthDeps): TeamService {
       const retry = await deps.limiter.hit([
         [`invite:acct:${active.user.id}`, deps.config.limits.invitePerAccount],
       ])
-      if (retry !== undefined) throw new AuthError('RATE_LIMITED', { retryAfterSeconds: retry })
+      if (retry !== undefined) throw new AuthError('rate_limited', { retryAfterSeconds: retry })
       const invitee = await deps.store.findUserByEmail(email)
       if (invitee && (await deps.store.findMember(team.id, invitee.id)))
-        throw new AuthError('CONFLICT')
+        throw new AuthError('conflict')
       const token = randomSecret()
       const now = deps.clock.now()
       const invitation = {
@@ -278,14 +278,14 @@ export function teamService(deps: AuthDeps): TeamService {
       const invitation = (await deps.store.listInvitations(team.id)).find(
         (i) => i.id === input.invitationId,
       )
-      if (!invitation) throw new AuthError('NOT_FOUND')
+      if (!invitation) throw new AuthError('not_found')
       await deps.store.consumeInvitation(invitation.id)
     },
 
     async accept(req, input) {
       const active = await grantingAs(req)
       const token = parseSecret(input.token)
-      if (token === undefined) throw new AuthError('INVALID_TOKEN')
+      if (token === undefined) throw new AuthError('invalid_token')
       const invitation = await deps.store.findInvitationByDigest(
         deps.keys.digest('team-invitation', token),
       )
@@ -295,14 +295,14 @@ export function teamService(deps: AuthDeps): TeamService {
         invitation.expiresAt <= deps.clock.now() ||
         invitation.email !== active.user.email
       )
-        throw new AuthError('INVALID_TOKEN')
+        throw new AuthError('invalid_token')
       if (deps.config.features.emailVerification && active.user.emailVerifiedAt === null)
-        throw new AuthError('EMAIL_NOT_VERIFIED')
+        throw new AuthError('email_not_verified')
       const consumed = await deps.store.consumeInvitation(invitation.id)
       // Expiry is judged at the consume, not only at the earlier lookup.
-      if (!consumed || consumed.expiresAt <= deps.clock.now()) throw new AuthError('INVALID_TOKEN')
+      if (!consumed || consumed.expiresAt <= deps.clock.now()) throw new AuthError('invalid_token')
       const team = await deps.store.findTeam(consumed.teamId)
-      if (!team) throw new AuthError('INVALID_TOKEN')
+      if (!team) throw new AuthError('invalid_token')
       if (!(await deps.store.findMember(team.id, active.user.id)))
         await deps.store.putMember({ teamId: team.id, userId: active.user.id, role: consumed.role })
       await deps.store.updateUser(active.user.id, { currentTeamId: team.id })
@@ -327,11 +327,11 @@ export function teamService(deps: AuthDeps): TeamService {
       const active = await grantingAs(req)
       const { team } = await adminOf(active, input.teamId)
       const role = parseRole(input.role)
-      if (typeof input.userId !== 'string') throw new AuthError('NOT_FOUND')
+      if (typeof input.userId !== 'string') throw new AuthError('not_found')
       // One atomic store operation: a read-then-write check let two admins demote each other.
       const outcome = await deps.store.changeMemberRole(team.id, input.userId, role)
-      if (outcome === 'not-found') throw new AuthError('NOT_FOUND')
-      if (outcome === 'last-admin') throw new AuthError('LAST_ADMIN')
+      if (outcome === 'not-found') throw new AuthError('not_found')
+      if (outcome === 'last-admin') throw new AuthError('last_admin')
       await emit(deps, req, {
         type: 'team.member.changed',
         userId: active.user.id,
@@ -344,12 +344,12 @@ export function teamService(deps: AuthDeps): TeamService {
     async removeMember(req, input) {
       const active = await signedIn(req)
       const { team, member } = await membership(active, input.teamId)
-      if (typeof input.userId !== 'string') throw new AuthError('NOT_FOUND')
+      if (typeof input.userId !== 'string') throw new AuthError('not_found')
       const leaving = input.userId === active.user.id
-      if (!leaving && member.role !== 'admin') throw new AuthError('FORBIDDEN')
+      if (!leaving && member.role !== 'admin') throw new AuthError('forbidden')
       const outcome = await deps.store.changeMemberRole(team.id, input.userId, null)
-      if (outcome === 'not-found') throw new AuthError('NOT_FOUND')
-      if (outcome === 'last-admin') throw new AuthError('LAST_ADMIN')
+      if (outcome === 'not-found') throw new AuthError('not_found')
+      if (outcome === 'last-admin') throw new AuthError('last_admin')
       // The removed user's current team is re-checked per request (current() returns null), so
       // their sessions lose the team immediately without touching them here.
       await emit(deps, req, {
