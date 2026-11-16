@@ -133,7 +133,7 @@ describe('@strutvane/auth/provider', () => {
     })
     expect(ok.response?.status).toBe(200)
     const cookie = cookieOf(ok.response)
-    expect(cookie).toMatch(/^sv_session=/)
+    expect(cookie).toMatch(/^strutvane_session=/)
     expect(await ok.response?.json()).toMatchObject({ actor: { roles: ['admin'] } })
 
     const me = await send('GET', '/api/v1/auth/me', { cookie })
@@ -241,10 +241,10 @@ describe('@strutvane/auth/provider', () => {
     })
     expect(created.response?.status).toBe(201)
     const tenant = (await created.response?.json()) as { tenantId: string; roles: string[] }
-    expect(tenant.roles).toEqual(['owner'])
+    expect(tenant.roles).toEqual(['admin'])
     // Creating a tenant changes privileges, so the session token rotates.
     const ownerCookie = cookieOf(created.response)
-    expect(ownerCookie).toMatch(/^sv_session=/)
+    expect(ownerCookie).toMatch(/^strutvane_session=/)
     expect(ownerCookie).not.toBe(cookie)
     expect((await send('GET', '/api/v1/auth/me', { cookie })).response?.status).toBe(401)
     const dup = await send('POST', '/api/v1/auth/tenants', {
@@ -260,13 +260,13 @@ describe('@strutvane/auth/provider', () => {
       body: JSON.stringify({ tenantId: tenant.tenantId }),
     })
     expect(await switched.response?.json()).toMatchObject({
-      actor: { tenantId: tenant.tenantId, roles: ['owner'] },
+      actor: { tenantId: tenant.tenantId, roles: ['admin'] },
     })
     // Switching rotates the session (fixation defence): use the new cookie.
     const rotated = cookieOf(switched.response) || ownerCookie
     const scoped = await send('GET', '/api/v1/invoices', { cookie: rotated })
     expect(scoped.tenant?.id).toBe(tenant.tenantId)
-    expect(scoped.actor?.roles).toEqual(['owner'])
+    expect(scoped.actor?.roles).toEqual(['admin'])
     const foreign = await send('POST', '/api/v1/auth/switch-tenant', {
       cookie: rotated,
       body: JSON.stringify({ tenantId: '0190a000-0000-7000-8000-00000000000c' }),
@@ -307,8 +307,8 @@ describe('native engine globalRoles', () => {
 })
 
 describe('provider hardening (attack classes)', () => {
-  const signIn = (password = 'wrong-password-123') =>
-    JSON.stringify({ email: 'admin@app.test', password })
+  const signIn = (password = 'wrong-password-123', email = 'admin@app.test') =>
+    JSON.stringify({ email, password })
 
   test('anonymous request cannot select a tenant by header', async () => {
     const { send } = await boot({ tenancy: { enabled: true, strategy: 'shared' } })
@@ -324,8 +324,9 @@ describe('provider hardening (attack classes)', () => {
     const { send } = await boot()
     const statuses: number[] = []
     for (let i = 0; i < 11; i++) {
+      // A different account each time: the per-account lockout (5 failures) must not be what trips.
       const r = await send('POST', '/api/v1/auth/sign-in', {
-        body: signIn(),
+        body: signIn(undefined, `probe${i}@app.test`),
         clientAddress: '203.0.113.50',
         // A forged header must not rotate the key.
         headers: { 'x-forwarded-for': `198.51.100.${i}` },
@@ -501,9 +502,14 @@ describe('role map from config/auth.ts', () => {
     expect((await permissions.can(admin, 'customer.viewAny')).reason).toBe('default-deny:no-policy')
   })
 
-  test('a tenant creator holds owner, which the role map grants inside that tenant only', async () => {
+  test('a tenant creator holds admin (the team role), which a tenant-scoped role map grants inside that tenant only', async () => {
+    // The native engine's tenant creator is the team's `admin`; here the map scopes it to tenants.
+    const tenantRoles = {
+      admin: { scope: 'tenant', permissions: ['*', 'customer.viewAny'] },
+      member: { permissions: ['*.viewAny', '*.view'] },
+    } as const
     const { app, send } = await boot({
-      auth: { roles },
+      auth: { roles: tenantRoles },
       tenancy: { enabled: true, strategy: 'shared' },
     })
     const signUp = await send('POST', '/api/v1/auth/sign-up', {
@@ -527,12 +533,11 @@ describe('role map from config/auth.ts', () => {
     })
     const body = (await switched.response?.json()) as { actor: Actor }
     const actor = body.actor
-    expect(actor).toMatchObject({ roles: ['owner'], tenantId })
+    expect(actor).toMatchObject({ roles: ['admin'], tenantId })
     const permissions = app.make(PermissionProviderToken)
     const full: Actor = { ...actor, attrs: {} }
-    // invoice's schema has no tenantId column: a tenant wildcard never reaches it.
-    expect((await permissions.can(full, 'invoice.viewAny')).allowed).toBe(false)
     // An exact grant is deliberate: it counts inside the tenant, and never outside (scope tenant).
+    // (invoice is left out: the fixture's invoice policy has its own rule for `admin`.)
     expect((await permissions.can(full, 'customer.viewAny')).allowed).toBe(true)
     const { tenantId: _t, ...outside } = full
     expect((await permissions.can(outside, 'customer.viewAny')).allowed).toBe(false)

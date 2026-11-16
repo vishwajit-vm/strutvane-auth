@@ -44,6 +44,7 @@ import type {
   IdentityUser,
   TenantInfo,
 } from './identity/engine.ts'
+import { engineConfigFrom } from './identity/engine-config.ts'
 
 export { IdentitySetupError } from './identity/app-identity.ts'
 
@@ -143,6 +144,9 @@ export async function openIdentityAdmin(
   const identity = await createAppIdentity({
     auth: project.auth,
     appUrl: project.appUrl,
+    root: project.root,
+    // Seeders manage tenants, so teams are on here whatever config/tenancy.ts says.
+    engineConfig: engineConfigFrom(project.auth, { tenancy: true }),
     database: project.database,
     logger: {
       warn: (message: string) => {
@@ -155,7 +159,7 @@ export async function openIdentityAdmin(
   if (identity.driver === 'memory' && options.allowMemory !== true) {
     await identity.close()
     throw new IdentitySetupError(
-      `This app keeps accounts in memory, so changes made here would be lost. Use session.driver "database" with PostgreSQL in config/auth.ts.${warnings.length ? ` (${warnings.join('; ')})` : ''}`,
+      `This app keeps accounts in memory, so changes made here would be lost. Configure PostgreSQL or SQLite in config/database.ts (and keep session.driver unset or "database").${warnings.length ? ` (${warnings.join('; ')})` : ''}`,
     )
   }
   const engine = identity.engine

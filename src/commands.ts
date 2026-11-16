@@ -3,8 +3,9 @@
  * project-local CLI from the app's `node_modules`. Plain objects in the CLI's command shape; auth
  * never imports the CLI.
  *
- * - `auth:migration`: writes `database/migrations/<timestamp>_auth_identity.sql` with the tables
- *   the persistent identity needs (only what is missing in the database), applied by `sv migrate`.
+ * - `auth:migration`: writes `database/migrations/<timestamp>_auth_identity.sql` with the identity
+ *   tables (native engine: the shipped migration, for apps that keep migrations in the app; the
+ *   deprecated Better Auth adapter: only what is missing), applied by `migrate`.
  * - `auth:user:create --email --name --password-env VAR`: an account (the password is read from an
  *   environment variable so it never lands in shell history or process listings).
  * - `tenant:create --name --slug --owner <email>` and
@@ -23,6 +24,7 @@ import {
   openIdentityAdmin,
 } from './admin.ts'
 import { createAppIdentity, RATE_LIMIT_TABLE } from './identity/app-identity.ts'
+import { engineConfigFrom } from './identity/engine-config.ts'
 import { rateLimitTableSql } from './postgres/rate-limit-store.ts'
 
 /** The parts of the CLI's command context these commands use. */
@@ -60,7 +62,11 @@ export function migrationStamp(date: Date): string {
 }
 
 /** Split Better Auth's compiled SQL into statements joined by the framework's breakpoint. */
-export function toMigrationFile(sql: string, created: Date): string | undefined {
+export function toMigrationFile(
+  sql: string,
+  created: Date,
+  dialect: 'postgres' | 'sqlite' = 'postgres',
+): string | undefined {
   const statements = sql
     .split(/;\s*(?:\r?\n|$)/)
     .map((s) => s.trim())
@@ -78,9 +84,9 @@ export function toMigrationFile(sql: string, created: Date): string | undefined 
   return [
     '-- strutvane:migration',
     '-- name: auth_identity',
-    '-- dialect: postgres',
+    `-- dialect: ${dialect}`,
     `-- created: ${created.toISOString()}`,
-    '-- Tables of the persistent identity (@strutvane/auth: Better Auth). Written by sv auth:migration.',
+    '-- Tables of the persistent identity (@strutvane/auth). Written by auth:migration.',
     statements.join(`;\n${BREAKPOINT}\n`) + ';',
     '',
   ].join('\n')
@@ -126,13 +132,15 @@ const migrationCommand: AuthCommand = {
   async run(ctx) {
     return guarded(ctx, async () => {
       const project = await loadAuthProject(ctx.requireProject().root)
-      if (project.auth.session?.driver !== 'database')
+      if (project.auth.session?.driver === 'memory' || !project.database)
         throw new IdentitySetupError(
-          'config/auth.ts: session.driver is not "database"; the in-memory identity needs no tables.',
+          'config/auth.ts: the identity is kept in memory (session.driver "memory" or no config/database.ts); it needs no tables.',
         )
       const identity = await createAppIdentity({
         auth: project.auth,
         appUrl: project.appUrl,
+        root: project.root,
+        engineConfig: engineConfigFrom(project.auth, { tenancy: true }),
         database: project.database,
         logger: { warn: (m: string) => ctx.out.warn(m), error: () => undefined },
         deliverPasswordReset: async () => undefined,
@@ -140,7 +148,9 @@ const migrationCommand: AuthCommand = {
       })
       try {
         if (identity.driver !== 'database' || !identity.compileMigrations)
-          throw new IdentitySetupError('Persistent identity needs PostgreSQL (config/database.ts).')
+          throw new IdentitySetupError(
+            'Persistent identity needs PostgreSQL or SQLite (config/database.ts).',
+          )
         const dir = project.migrationsDirectory
         const written = existsSync(dir)
           ? readdirSync(dir).filter((f) => /_auth_identity\.sql$/.test(f))
@@ -148,7 +158,7 @@ const migrationCommand: AuthCommand = {
         const missing = (await identity.tablesMissing?.()) ?? true
         // Written but not applied yet: a second file would create the same tables twice.
         if (written.length > 0 && missing) {
-          ctx.out.info(`${written.at(-1)} is already written. Run: pnpm sv migrate`)
+          ctx.out.info(`${written.at(-1)} is already written. Run: node strut migrate`)
           return { data: { written: null } }
         }
         // Better Auth answers ";" when nothing is missing.
@@ -159,14 +169,19 @@ const migrationCommand: AuthCommand = {
         }
         const now = new Date()
         // The rate-limit table is ours, not Better Auth's; IF NOT EXISTS keeps it idempotent.
-        const rateLimits = `${rateLimitTableSql({ table: RATE_LIMIT_TABLE })};`
-        const file = toMigrationFile(sql === '' ? rateLimits : `${sql};\n${rateLimits}`, now)
+        const rateLimits =
+          identity.native === undefined ? `${rateLimitTableSql({ table: RATE_LIMIT_TABLE })};` : ''
+        const file = toMigrationFile(
+          sql === '' ? rateLimits : `${sql};\n${rateLimits}`,
+          now,
+          identity.dialect ?? 'postgres',
+        )
         if (!file) return { data: { written: null } }
         mkdirSync(dir, { recursive: true })
         const path = join(dir, `${migrationStamp(now)}_auth_identity.sql`)
         writeFileSync(path, file, { flag: 'wx' })
         const rel = relative(project.root, path).replaceAll('\\', '/')
-        ctx.out.success(`Created ${rel}. Run: pnpm sv migrate`)
+        ctx.out.success(`Created ${rel}. Run: node strut migrate`)
         return { data: { written: rel } }
       } finally {
         await identity.close()

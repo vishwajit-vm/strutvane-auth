@@ -49,8 +49,8 @@ describe('packaging: one kernel', () => {
   it('peer-depends on the merged framework and never bundles or pins its own copy', () => {
     expect(pkg.dependencies?.[FRAMEWORK]).toBeUndefined()
     const range = pkg.peerDependencies?.[FRAMEWORK]
-    expect(range).toMatch(/^\^0\.\d+\.\d+(-next\.\d+)?$/)
-    expect(range).not.toBe('^0.1.0-next.0')
+    // CONSISTENCY #128: the interim framework 0.1.0-next.1 or the 0.2 train; never 0.1.0-next.0.
+    expect(range).toBe('^0.1.0-next.1 || ^0.2.0-next.0')
   })
 
   it('depends on no other product package', () => {

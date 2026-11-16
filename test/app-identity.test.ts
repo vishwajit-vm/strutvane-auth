@@ -1,5 +1,6 @@
 // Engine selection for apps, the admin API and the contributed commands, without Docker (the
 // PostgreSQL success paths run in test/integration/app-identity.test.ts).
+import { mkdtempSync, rmSync } from 'node:fs'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { type AddressInfo, createServer, type Socket } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -18,8 +19,10 @@ import {
   IdentitySetupError,
   isPostgres,
   poolOptionsFrom,
+  sqliteFileFrom,
 } from '../src/identity/app-identity.ts'
 import { createAuthProvider } from '../src/provider.ts'
+import { SQLITE_SCHEMA } from '../src/sqlite.ts'
 
 const dirs: string[] = []
 afterEach(async () => {
@@ -34,6 +37,7 @@ const base = {
   deliverPasswordReset: async () => undefined,
 }
 const SECRET = 'x'.repeat(40)
+const APP_KEY = `base64:${Buffer.alloc(32, 7).toString('base64')}`
 
 async function project(files: Record<string, string>): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), 'sv-auth-id-'))
@@ -77,15 +81,81 @@ describe('createAppIdentity: which engine an app runs on', () => {
     expect(warnings.join()).toMatch(/"valkey" is not built yet/)
   })
 
-  test('database on a non-PostgreSQL database warns and stays in memory', async () => {
+  test('a database without a store yet (MySQL) warns and stays in memory', async () => {
     warnings.length = 0
     const id = await createAppIdentity({
       ...base,
       auth: { session: { driver: 'database' } },
-      database: { default: 'sqlite', connection: { filename: 'x.sqlite' } },
+      database: { default: 'mysql', connection: { url: 'mysql://localhost/x' } },
     })
     expect(id.driver).toBe('memory')
-    expect(warnings.join()).toMatch(/needs PostgreSQL/)
+    expect(warnings.join()).toMatch(/waits for the framework ORM/)
+    await id.close()
+  })
+
+  test('SQLite: needs APP_KEY and the migrated tables, then persists in the app database file', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sv-auth-sqlite-'))
+    const database = { default: 'sqlite', connection: { filename: 'app.sqlite' } }
+    try {
+      await expect(
+        createAppIdentity({ ...base, auth: {}, database, root: dir, appKey: '' }),
+      ).rejects.toThrow(/APP_KEY/)
+      await expect(
+        createAppIdentity({ ...base, auth: {}, database, root: dir, appKey: APP_KEY }),
+      ).rejects.toThrow(/do not exist yet/)
+      const { DatabaseSync } = await import('node:sqlite')
+      const db = new DatabaseSync(join(dir, 'app.sqlite'))
+      db.exec(SQLITE_SCHEMA)
+      db.close()
+      const id = await createAppIdentity({
+        ...base,
+        auth: {},
+        database,
+        root: dir,
+        appKey: APP_KEY,
+      })
+      try {
+        expect([id.driver, id.dialect, id.engine.name]).toEqual(['database', 'sqlite', 'native'])
+        expect(await id.tablesMissing?.()).toBe(false)
+        expect(await id.compileMigrations?.()).toContain('CREATE TABLE IF NOT EXISTS users')
+        const created = await id.engine.createUserAsSystem({
+          email: 'ada@acme.test',
+          password: 'a long enough password',
+          name: 'Ada',
+        })
+        expect(created.ok).toBe(true)
+      } finally {
+        await id.close()
+      }
+      // A second boot on the same file sees the account (persistent).
+      const again = await createAppIdentity({
+        ...base,
+        auth: {},
+        database,
+        root: dir,
+        appKey: APP_KEY,
+      })
+      try {
+        const found = await again.engine.findUserAsSystem({ email: 'ada@acme.test' })
+        expect(found.ok ? found.value?.name : null).toBe('Ada')
+      } finally {
+        await again.close()
+      }
+      expect(
+        sqliteFileFrom({ default: 'sqlite', connection: { url: ':memory:' } }, dir),
+      ).toBeUndefined()
+      expect(sqliteFileFrom({ default: 'sqlite' }, dir)).toBe(join(dir, 'storage/database.sqlite'))
+      await expect(
+        createAppIdentity({
+          ...base,
+          auth: {},
+          database: { default: 'sqlite', connection: { filename: ':memory:' } },
+          appKey: APP_KEY,
+        }),
+      ).rejects.toThrow(/needs a database file/)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   test('database on PostgreSQL needs a 32+ character secret and a reachable database', async () => {
@@ -93,18 +163,35 @@ describe('createAppIdentity: which engine an app runs on', () => {
       default: 'postgres',
       connection: { host: '127.0.0.1', port: 1, user: 'u', database: 'd' },
     }
+    // Native (the default): APP_KEY is required; the deprecated adapter needs its secret.
+    await expect(
+      createAppIdentity({ ...base, auth: {}, database: pg, appKey: 'short' }),
+    ).rejects.toBeInstanceOf(IdentitySetupError)
     await expect(
       createAppIdentity({
         ...base,
-        auth: { session: { driver: 'database' }, secret: 'short' },
+        auth: { identity: 'better-auth', session: { driver: 'database' }, secret: 'short' },
         database: pg,
       }),
     ).rejects.toBeInstanceOf(IdentitySetupError)
-    // Nothing listens on port 1: the boot fails (and the pool is closed) instead of hanging.
     await expect(
       createAppIdentity({
         ...base,
-        auth: { session: { driver: 'database' }, secret: SECRET },
+        auth: { identity: 'better-auth', session: { driver: 'memory' }, secret: SECRET },
+        database: pg,
+      }),
+    ).rejects.toThrow(/only with session.driver "database"/)
+    await expect(
+      createAppIdentity({ ...base, auth: { identity: 'better-auth', secret: SECRET } }),
+    ).rejects.toThrow(/needs PostgreSQL/)
+    // Nothing listens on port 1: the boot fails (and the pool is closed) instead of hanging.
+    await expect(
+      createAppIdentity({ ...base, auth: {}, database: pg, appKey: APP_KEY }),
+    ).rejects.toMatchObject({ code: 'ECONNREFUSED' })
+    await expect(
+      createAppIdentity({
+        ...base,
+        auth: { identity: 'better-auth', session: { driver: 'database' }, secret: SECRET },
         database: pg,
       }),
     ).rejects.toMatchObject({ code: 'ECONNREFUSED' })
@@ -125,7 +212,8 @@ describe('createAppIdentity: which engine an app runs on', () => {
       const outcome = await Promise.race([
         createAppIdentity({
           ...base,
-          auth: { session: { driver: 'database' }, secret: SECRET },
+          auth: { session: { driver: 'database' } },
+          appKey: APP_KEY,
           database: { default: 'postgres', connection: { host: '127.0.0.1', port, user: 'u' } },
         }).then(
           () => 'booted',
@@ -198,7 +286,13 @@ describe('admin API and commands without a persistent store', () => {
       expect(
         await idp.ensureTenant({ name: 'Acme', slug: 'acme', ownerEmail: 'o@acme.test' }),
       ).toEqual(t)
-      await idp.setMember({ tenant: t.tenantId, email: 'o@acme.test', role: 'member' })
+      // The owner is the tenant's only admin: demoting them is refused (last-admin guard).
+      await expect(
+        idp.setMember({ tenant: t.tenantId, email: 'o@acme.test', role: 'member' }),
+      ).rejects.toBeInstanceOf(IdentityAdminError)
+      await idp.ensureUser({ email: 'm@acme.test', name: 'M', password: 'long-enough-password' })
+      await idp.setMember({ tenant: t.tenantId, email: 'm@acme.test', role: 'viewer' })
+      await idp.setMember({ tenant: 'acme', email: 'm@acme.test', role: 'member' })
       await expect(
         idp.setMember({ tenant: 'acme', email: 'nobody@acme.test', role: 'member' }),
       ).rejects.toBeInstanceOf(IdentityAdminError)
@@ -207,7 +301,7 @@ describe('admin API and commands without a persistent store', () => {
       ).rejects.toThrow(/no account/)
       await expect(
         idp.ensureUser({ email: 'w@acme.test', name: 'W', password: 'short' }),
-      ).rejects.toMatchObject({ code: 'VALIDATION_FAILED' })
+      ).rejects.toMatchObject({ code: 'validation_failed' })
     } finally {
       await idp.close()
     }
@@ -260,7 +354,8 @@ describe('admin API and commands without a persistent store', () => {
       )?.exitCode,
     ).toBe(3)
     const down = await project({
-      'config/auth.ts': `export default { secret: '${SECRET}', session: { driver: 'database' } }\n`,
+      '.env': `APP_KEY=${APP_KEY}\n`,
+      'config/auth.ts': `export default { session: { driver: 'database' } }\n`,
       'config/database.ts':
         "export default { default: 'postgres', connection: { host: '127.0.0.1', port: 1, user: 'u', database: 'd' } }\n",
     })

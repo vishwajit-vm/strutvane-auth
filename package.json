@@ -109,7 +109,7 @@
     "test:perf": "vitest run --config vitest.perf.config.ts"
   },
   "peerDependencies": {
-    "@strutvane/framework": "^0.1.0-next.1",
+    "@strutvane/framework": "^0.1.0-next.1 || ^0.2.0-next.0",
     "better-auth": "1.7.23",
     "hono": "^4.13.0",
     "pg": "^8.23.0",
