@@ -15,31 +15,24 @@ import {
 import { activeSession, readSession } from './core/sessions.ts'
 import { type ChallengeMethod, challengeMethods } from './core/sign-in.ts'
 import { createKeyRing } from './crypto/keys.ts'
-import { newId } from './crypto/random.ts'
-import { AuthError } from './errors.ts'
 import { createLimiter } from './limits/limiter.ts'
 import { createLockout } from './limits/lockout.ts'
-import { parseEmail } from './password/email.ts'
 import { createScryptHasher, type PasswordHasher } from './password/hasher.ts'
-import { assertPasswordAllowed, type PasswordCheck } from './password/rules.ts'
+import type { PasswordCheck } from './password/rules.ts'
 import { type Clock, systemClock } from './ports/clock.ts'
 import type { AuthRequest } from './ports/cookies.ts'
 import type { CounterStore } from './ports/counter-store.ts'
 import type { AuthEventSink, AuthLogger, LoginMethod } from './ports/events.ts'
 import type { AuthMailer } from './ports/mailer.ts'
-import type { AuthStore, UserRecord } from './ports/store.ts'
+import type { AuthStore } from './ports/store.ts'
 import { type EmailLinkService, emailLinkService } from './services/email-link.ts'
 import { type ImpersonationService, impersonationService } from './services/impersonation.ts'
 import { type PasskeyService, passkeyService } from './services/passkeys.ts'
 import { type PasswordResetService, passwordResetService } from './services/password-reset.ts'
 import { type PasswordService, passwordService } from './services/passwords.ts'
 import { type SessionService, sessionService } from './services/sessions.ts'
-import {
-  type CurrentTeam,
-  createPersonalTeam,
-  type TeamService,
-  teamService,
-} from './services/teams.ts'
+import { type SystemService, systemService } from './services/system.ts'
+import { type CurrentTeam, type TeamService, teamService } from './services/teams.ts'
 import { type TokenService, tokenService } from './services/tokens.ts'
 import { type TwoFactorService, twoFactorService } from './services/two-factor.ts'
 import { type VerificationService, verificationService } from './services/verification.ts'
@@ -85,25 +78,6 @@ export interface AuthState {
   } | null
   readonly team: CurrentTeam | null
   readonly roles: readonly string[]
-}
-
-/** Trusted, server-side operations for seeders and commands (`user:create`), never routes. */
-export interface SystemService {
-  /**
-   * Create a user directly (seeders, `node strut user:create --password-env`).
-   *
-   * @example
-   * ```ts
-   * await auth.system.createUser({ name: 'Ada', email: 'ada@acme.test', password: process.env.ADMIN_PASSWORD, roles: ['admin'] })
-   * ```
-   */
-  createUser(input: {
-    readonly name: string
-    readonly email: string
-    readonly password?: string
-    readonly roles?: readonly string[]
-    readonly verified?: boolean
-  }): Promise<UserRecord>
 }
 
 /** Everything `createAuth` returns. */
@@ -221,50 +195,7 @@ export function createAuth(ports: AuthPorts): Auth {
     tokens: tokenService(deps),
     teams,
     impersonation: impersonationService(deps),
-    system: {
-      async createUser(input) {
-        const email = parseEmail(input.email)
-        if (email === undefined)
-          throw new AuthError('validation_failed', {
-            issues: [{ field: 'email', code: 'invalid' }],
-          })
-        const password =
-          input.password === undefined
-            ? undefined
-            : await assertPasswordAllowed(input.password, {
-                min: deps.config.passwords.min,
-                max: deps.config.passwords.max,
-                check: deps.passwordCheck,
-                onUnknown: deps.passwordCheckOnUnknown,
-                logger: deps.logger,
-              })
-        for (const role of input.roles ?? [])
-          if (!deps.config.roles.includes(role))
-            throw new AuthError('validation_failed', {
-              issues: [{ field: 'roles', code: 'invalid' }],
-            })
-        const now = clock.now()
-        const created = await deps.store.createUser({
-          id: newId(),
-          email,
-          name: input.name,
-          passwordHash: password === undefined ? null : await deps.hasher.hash(password),
-          emailVerifiedAt: input.verified === true ? now : null,
-          twoFactorSecret: null,
-          twoFactorConfirmedAt: null,
-          twoFactorLastStep: null,
-          currentTeamId: null,
-          createdAt: now,
-        })
-        if (!created) throw new AuthError('email_taken')
-        if (input.roles) await deps.store.setUserRoles(created.id, input.roles)
-        if (deps.config.features.teams && deps.config.teams.personal) {
-          await createPersonalTeam(deps, undefined, created)
-          return (await deps.store.findUserById(created.id)) ?? created
-        }
-        return created
-      },
-    },
+    system: systemService(deps),
     idle: () => deps.background.idle(),
   }
   return Object.freeze(auth)

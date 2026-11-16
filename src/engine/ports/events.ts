@@ -107,6 +107,12 @@ export type AuthEvent =
       readonly role: string | null
     })
   | (Base & {
+      readonly type: 'role.assigned'
+      readonly userId: string
+      /** The global role the user now holds (names come from the configured preset). */
+      readonly role: string
+    })
+  | (Base & {
       readonly type: 'impersonation.started'
       readonly adminId: string
       readonly userId: string
