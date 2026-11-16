@@ -335,7 +335,7 @@ describe('persistent identity in the app provider', () => {
       const file = await readFile(
         join(
           import.meta.dirname,
-          '../../migrations/postgres/20261114000000_strutvane_auth_identity.sql',
+          '../../migrations-better-auth/postgres/20261114000000_strutvane_auth_identity.sql',
         ),
         'utf8',
       )

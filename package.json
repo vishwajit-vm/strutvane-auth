@@ -73,7 +73,8 @@
     "dist",
     "README.md",
     "LICENSE",
-    "migrations"
+    "migrations",
+    "migrations-better-auth"
   ],
   "engines": {
     "node": ">=24.3"

@@ -13,7 +13,7 @@ import type { AuthMail } from '../../src/engine/ports/mailer.ts'
 import type { SessionPatch, UserPatch } from '../../src/engine/ports/store.ts'
 import type { PasskeyMode } from '../../src/engine/services/passkeys.ts'
 
-export function configTypes(): void {
+function configTypes(): void {
   defineAuthConfig({
     appUrl: 'https://x.test',
     features: { twoFactor: true },
@@ -29,7 +29,7 @@ export function configTypes(): void {
   defineAuthConfig({ appUrl: 'https://x.test', features: { registration: 'yes' } })
 }
 
-export function eventTypes(): AuthEvent[] {
+function eventTypes(): AuthEvent[] {
   const ok: AuthEvent = {
     type: 'login',
     at: 1,
@@ -74,7 +74,7 @@ export function eventTypes(): AuthEvent[] {
   return [ok, leaky, tokenLeak, unknown]
 }
 
-export function mailTypes(): AuthMail[] {
+function mailTypes(): AuthMail[] {
   const ok: AuthMail = {
     kind: 'password-reset',
     to: 'a@b.io',
@@ -86,7 +86,7 @@ export function mailTypes(): AuthMail[] {
   return [ok, noUrl]
 }
 
-export function resultNarrowing(result: SignInResult): number {
+function resultNarrowing(result: SignInResult): number {
   // @ts-expect-error methods only exist once narrowed to two-factor-required
   const before = result.methods
   if (result.status === 'two-factor-required')
@@ -94,14 +94,14 @@ export function resultNarrowing(result: SignInResult): number {
   return 0
 }
 
-export function errorCodes(): void {
+function errorCodes(): void {
   const code: AuthErrorCode = 'rate_limited'
   new AuthError(code)
   // @ts-expect-error error codes are a closed, stable set
   new AuthError('SOMETHING_ELSE')
 }
 
-export function storePatches(): void {
+function storePatches(): void {
   const user: UserPatch = { passwordHash: null, twoFactorConfirmedAt: 1 }
   // @ts-expect-error a user patch cannot change the id
   const id: UserPatch = { id: 'other' }
@@ -115,7 +115,7 @@ export function storePatches(): void {
   void [user, id, email, session, hijack, imp]
 }
 
-export function stateIsReadonly(state: AuthState, auth: Auth): void {
+function stateIsReadonly(state: AuthState, auth: Auth): void {
   // @ts-expect-error the state handed to the app is read-only
   state.user.id = 'someone-else'
   // @ts-expect-error the services object is frozen and read-only

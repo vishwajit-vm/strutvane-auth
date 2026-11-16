@@ -10,7 +10,7 @@ import { describe, expect, it } from 'vitest'
 import { defineAuthConfig } from '../../src/engine/config.ts'
 import { AUTH_ERROR_STATUS, AuthError, toIssue } from '../../src/engine/errors.ts'
 import { createAuthHandler } from '../../src/engine/http/routes.ts'
-import { Browser, type Harness, harness, PASSWORD, rejectsWith } from './helpers/harness.ts'
+import { Browser, type Harness, harness, PASSWORD, rejectsWith, STORES } from './helpers/harness.ts'
 
 const APP = 'http://localhost:3000'
 
@@ -148,7 +148,7 @@ describe('#25/#107: feature switches', () => {
 })
 
 describe('teams as tenants: slugs and the personal-team switch', () => {
-  it.each(['memory', 'sqlite'] as const)(
+  it.each(STORES)(
     '%s: slugs are validated and unique; personal teams can be off',
     async (store) => {
       const h = harness({

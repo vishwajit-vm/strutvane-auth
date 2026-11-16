@@ -6,8 +6,10 @@ import { afterAll, describe, expect, it } from 'vitest'
 import { manualClock } from '../../src/engine/ports/clock.ts'
 import type { AuthStore, UserRecord } from '../../src/engine/ports/store.ts'
 import { memoryAuthStore, memoryCounterStore } from '../../src/engine/store/memory.ts'
+import { postgresAuthStore, postgresCounterStore } from '../../src/engine/store/postgres.ts'
 import { sqliteAuthStore, sqliteCounterStore } from '../../src/engine/store/sqlite.ts'
 import { Browser, harness, rejectsWith, START } from './helpers/harness.ts'
+import { pgliteSchemaClient } from './helpers/pg.ts'
 
 const dir = mkdtempSync(join(tmpdir(), 'sv-auth-'))
 /** Every file-backed connection, closed before the folder is removed (Windows keeps open files locked). */
@@ -38,6 +40,7 @@ const user = (id: string, email: string): UserRecord => ({
 const STORES: [string, () => AuthStore][] = [
   ['memory', () => memoryAuthStore()],
   ['sqlite', () => sqliteAuthStore(new DatabaseSync(':memory:'))],
+  ['postgres', () => postgresAuthStore(pgliteSchemaClient())],
 ]
 
 describe.each(STORES)('store contract (%s)', (_name, make) => {
@@ -153,6 +156,86 @@ describe.each(STORES)('store contract (%s)', (_name, make) => {
     })
     expect(await s.consumeInvitation('i')).toBeDefined()
     expect(await s.consumeInvitation('i')).toBeUndefined()
+  })
+})
+
+describe('PostgreSQL: several app instances on one database, rows that fail closed', () => {
+  it('bypass attempt: spreading attempts over two app instances does not double the limit', async () => {
+    const shared = pgliteSchemaClient()
+    const clock = manualClock(START)
+    const config = { lockout: { threshold: 1000 } }
+    const one = harness({ store: 'postgres', pg: shared, clock, config })
+    const two = harness({ store: 'postgres', pg: shared, clock, config })
+    for (let i = 0; i < 10; i++)
+      await rejectsWith(
+        () =>
+          (i % 2 === 0 ? one : two).auth.passwords.login(new Browser('198.51.100.1').req, {
+            email: `x${i}@acme.test`,
+            password: 'wrong password!',
+          }),
+        'invalid_credentials',
+      )
+    for (const instance of [one, two])
+      await rejectsWith(
+        () =>
+          instance.auth.passwords.login(new Browser('198.51.100.1').req, {
+            email: 'y@acme.test',
+            password: 'wrong password!',
+          }),
+        'rate_limited',
+      )
+  })
+
+  it('a single-use record is consumed once across two instances', async () => {
+    const shared = pgliteSchemaClient()
+    const [a, b] = [postgresAuthStore(shared), postgresAuthStore(shared)]
+    await a.putOneTime({
+      digest: 'd',
+      purpose: 'email-link',
+      userId: null,
+      payload: { nonce: 'n' },
+      createdAt: 1,
+      expiresAt: 2,
+    })
+    const results = await Promise.all([
+      a.consumeOneTime('d', 'email-link'),
+      b.consumeOneTime('d', 'email-link'),
+    ])
+    expect(results.filter((r) => r !== undefined)).toHaveLength(1)
+    expect(results.find((r) => r !== undefined)?.payload).toEqual({ nonce: 'n' })
+  })
+
+  it('unknown session states, methods and one-time purposes fail closed', async () => {
+    const client = pgliteSchemaClient()
+    const store = postgresAuthStore(client)
+    await client.query('ALTER TABLE sessions DROP CONSTRAINT IF EXISTS sessions_state_check')
+    for (const [state, method] of [
+      ['Two-Factor', 'password'],
+      ['pending', 'password'],
+      ['active', 'sso'],
+    ] as const) {
+      await client.query(
+        `INSERT INTO sessions (id, user_id, state, method, created_at, last_activity, expires_at, idle_ms, remember)
+         VALUES ($1, 'u', $2, $3, 1, 1, 9999999999999, 1000, false)`,
+        [`${state}|${method}`, state, method],
+      )
+      await expect(store.findSession(`${state}|${method}`), `${state} ${method}`).rejects.toThrow(
+        TypeError,
+      )
+    }
+    await client.query(
+      `INSERT INTO auth_one_time_tokens (digest, purpose, user_id, payload, created_at, expires_at)
+       VALUES ('x', 'magic', NULL, '{}', 1, 2)`,
+    )
+    await expect(store.findOneTime('x', 'magic' as never)).rejects.toThrow(TypeError)
+  })
+
+  it('a corrupt number column fails closed instead of reading as NaN', async () => {
+    const client = pgliteSchemaClient()
+    const store = postgresAuthStore(client)
+    await store.createUser(user('u', 'a@b.io'))
+    await client.query("ALTER TABLE users ALTER COLUMN created_at TYPE text USING 'soon'")
+    await expect(store.findUserById('u')).rejects.toThrow(TypeError)
   })
 })
 
@@ -282,6 +365,10 @@ describe('SQLite across connections (several app processes on one database)', ()
       [
         'sqlite',
         (c: ReturnType<typeof manualClock>) => sqliteCounterStore(new DatabaseSync(':memory:'), c),
+      ],
+      [
+        'postgres',
+        (c: ReturnType<typeof manualClock>) => postgresCounterStore(pgliteSchemaClient(), c),
       ],
     ] as const) {
       const clock = manualClock(START)

@@ -15,10 +15,16 @@ import type { AuthEvent } from '../../../src/engine/ports/events.ts'
 import type { AuthMail } from '../../../src/engine/ports/mailer.ts'
 import type { AuthStore, UserRecord } from '../../../src/engine/ports/store.ts'
 import { memoryAuthStore, memoryCounterStore } from '../../../src/engine/store/memory.ts'
+import {
+  type PostgresClient,
+  postgresAuthStore,
+  postgresCounterStore,
+} from '../../../src/engine/store/postgres.ts'
 import { sqliteAuthStore, sqliteCounterStore } from '../../../src/engine/store/sqlite.ts'
+import { pgliteSchemaClient } from './pg.ts'
 
-/** Both stores every behaviour suite runs against. */
-export const STORES = ['memory', 'sqlite'] as const
+/** The stores every behaviour suite runs against (postgres: PGlite, one schema per harness). */
+export const STORES = ['memory', 'sqlite', 'postgres'] as const
 export type StoreKind = (typeof STORES)[number]
 
 export const START: number = Date.UTC(2026, 10, 15, 9, 0, 0)
@@ -63,6 +69,8 @@ export interface HarnessOptions {
   readonly hasher?: PasswordHasher
   readonly passwordCheck?: PasswordCheck
   readonly db?: DatabaseSync
+  /** A PostgreSQL client to share with another harness (two app instances on one database). */
+  readonly pg?: PostgresClient
   readonly clock?: ManualClock
 }
 
@@ -98,8 +106,13 @@ export function harness(options: HarnessOptions = {}): Harness {
   const clock = options.clock ?? manualClock(START)
   const kind = options.store ?? 'memory'
   const db = options.db ?? (kind === 'sqlite' ? new DatabaseSync(':memory:') : undefined)
-  const store = db ? sqliteAuthStore(db) : memoryAuthStore()
-  const counters = db ? sqliteCounterStore(db, clock) : memoryCounterStore(clock)
+  const pg = options.pg ?? (kind === 'postgres' ? pgliteSchemaClient() : undefined)
+  const store = db ? sqliteAuthStore(db) : pg ? postgresAuthStore(pg) : memoryAuthStore()
+  const counters = db
+    ? sqliteCounterStore(db, clock)
+    : pg
+      ? postgresCounterStore(pg, clock)
+      : memoryCounterStore(clock)
   const mails: AuthMail[] = []
   const events: AuthEvent[] = []
   const logs: string[] = []
