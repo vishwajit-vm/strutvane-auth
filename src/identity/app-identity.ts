@@ -10,9 +10,13 @@
  * | `native` | `memory` | any | native engine in memory: development and tests |
  * | `better-auth` | `database` | PostgreSQL | **deprecated** Better Auth adapter (ADR-0023) |
  *
+ * The tables are the app's migrations (decision #2): its own `users` table, auth's columns on it
+ * and auth's tables (`node strut auth:migration` copies the migrations, `node strut migrate` runs
+ * them). Nothing here creates or alters a table.
+ *
  * Failure scenarios (each stops the boot with the fix in the message, fail closed):
  * - a persistent store without `APP_KEY` (every digest and signature derives from it);
- * - the auth tables do not exist yet (`migrate` applies the shipped migration);
+ * - an auth table or an auth column of `users` does not exist yet (run the migrations);
  * - `pg` (or, for Better Auth, `better-auth`) is not installed;
  * - the database accepts no connection within 10 s.
  *
@@ -35,8 +39,6 @@ import {
   postgresAuthStore,
   postgresCounterStore,
 } from '../engine/store/postgres.ts'
-import { POSTGRES_AUTH_STATEMENTS } from '../engine/store/postgres-schema.ts'
-import { SQLITE_SCHEMA } from '../engine/store/sqlite-schema.ts'
 import type { GlobalRoles, IdentityEngine, PasswordResetDelivery } from './engine.ts'
 import {
   createNativeEngine,
@@ -44,9 +46,14 @@ import {
   type NativeIdentityEngine,
 } from './native.ts'
 
-/** The `config/database.ts` section, as far as auth reads it. */
+/**
+ * The `config/database.ts` section, as far as auth reads it: the skeleton's flat shape
+ * (`default` is the engine, `database` the SQLite file) or a `connection` object.
+ */
 export interface AppDatabaseSection {
   readonly default?: string
+  /** The database name, or the SQLite file relative to the project root (skeleton shape). */
+  readonly database?: unknown
   readonly connection?: Readonly<Record<string, unknown>>
 }
 
@@ -85,9 +92,9 @@ export interface AppIdentity {
   readonly driver: 'database' | 'memory'
   /** The SQL dialect of a persistent store. */
   readonly dialect?: 'postgres' | 'sqlite'
-  /** The SQL that creates the auth tables (persistent driver only). */
+  /** The SQL that creates the missing tables (the deprecated Better Auth adapter only). */
   compileMigrations?(): Promise<string>
-  /** Whether any auth table is missing (persistent driver only). */
+  /** Whether any auth table or auth column of `users` is missing (persistent driver only). */
   tablesMissing?(): Promise<boolean>
   close(): Promise<void>
 }
@@ -103,11 +110,11 @@ export const RATE_LIMIT_TABLE = 'strutvane_rate_limits'
 /** How long a pool waits for a database connection before failing (fail closed). */
 const CONNECT_TIMEOUT_MS = 10_000
 
-/** Every table the native engine needs (checked at boot). */
+/** Every table the native engine needs (checked at boot). `users` is the app's own. */
 const NATIVE_TABLES = [
   'users',
   'user_roles',
-  'sessions',
+  'auth_sessions',
   'auth_one_time_tokens',
   'two_factor_recovery_codes',
   'passkeys',
@@ -117,6 +124,17 @@ const NATIVE_TABLES = [
   'team_invitations',
   'auth_counters',
 ] as const
+
+/** The columns auth's migration adds to the app's `users` table (checked at boot). */
+const USER_COLUMNS = [
+  'two_factor_secret',
+  'two_factor_confirmed_at',
+  'two_factor_last_step',
+  'current_team_id',
+] as const
+
+/** One query that fails when any auth table or auth column of `users` is missing. */
+const SCHEMA_PROBE = `SELECT ${USER_COLUMNS.map((c) => `users.${c}`).join(', ')} FROM ${NATIVE_TABLES.join(', ')} LIMIT 0`
 
 const str = (v: unknown): string | undefined => (typeof v === 'string' && v !== '' ? v : undefined)
 const num = (v: unknown): number | undefined =>
@@ -139,7 +157,7 @@ function driverOf(db: AppDatabaseSection | undefined): string | undefined {
  */
 export function isPostgres(db: AppDatabaseSection | undefined): boolean {
   const driver = driverOf(db)
-  return driver === 'postgres' || driver === 'azure-postgres'
+  return driver === 'postgres' || driver === 'pgsql' || driver === 'azure-postgres'
 }
 
 /**
@@ -171,11 +189,12 @@ export function poolOptionsFrom(db: AppDatabaseSection | undefined): Record<stri
 }
 
 /**
- * The SQLite file of `config/database.ts` (`connection.filename`, or a `file:` url), resolved
- * against the project root. `undefined` when it is not a file (`:memory:`, a remote libSQL url).
+ * The SQLite file of `config/database.ts`: the skeleton's `database` key, `connection.filename`
+ * or a `file:` url (default `database/database.sqlite`, the framework's), resolved against the
+ * project root. `undefined` when it is not a file (`:memory:`, a remote libSQL url).
  *
  * @example
- * sqliteFileFrom({ default: 'sqlite', connection: { filename: 'storage/app.sqlite' } }, '/app') // '/app/storage/app.sqlite'
+ * sqliteFileFrom({ default: 'sqlite', database: 'database/app.sqlite' }, '/app') // '/app/database/app.sqlite'
  */
 export function sqliteFileFrom(
   db: AppDatabaseSection | undefined,
@@ -186,7 +205,8 @@ export function sqliteFileFrom(
   let file: string | undefined
   if (url?.startsWith('file:'))
     file = decodeURIComponent(new URL(url).pathname).replace(/^\/([A-Za-z]:)/, '$1')
-  else if (url === undefined) file = str(c['filename']) ?? 'storage/database.sqlite'
+  else if (url === undefined)
+    file = str(c['filename']) ?? str(db?.database) ?? 'database/database.sqlite'
   if (file === undefined || file === ':memory:') return undefined
   return isAbsolute(file) ? file : resolve(root, file)
 }
@@ -213,7 +233,7 @@ function requireAppKey(options: AppIdentityOptions): string {
 }
 
 const MIGRATIONS_HINT =
-  'The auth tables do not exist yet. Run `node strut migrate` (@strutvane/auth ships them as a migration; `node strut auth:migration` copies it into database/migrations).'
+  "The auth tables (or the auth columns of users) do not exist yet. Run `node strut auth:migration` (it copies @strutvane/auth's migrations into database/migrations), then `node strut migrate`."
 
 type NativeFactory = (extra?: Partial<NativeEngineOptions>) => NativeIdentityEngine
 
@@ -294,10 +314,11 @@ async function postgresIdentity(
   try {
     const tablesMissing = async (): Promise<boolean> => {
       try {
-        await client.query(`SELECT 1 FROM ${NATIVE_TABLES.join(', ')} LIMIT 0`)
+        await client.query(SCHEMA_PROBE)
         return false
       } catch (error) {
-        if ((error as { code?: unknown }).code === '42P01') return true // undefined_table
+        const code = (error as { code?: unknown }).code
+        if (code === '42P01' || code === '42703') return true // undefined_table / undefined_column
         throw error
       }
     }
@@ -313,7 +334,6 @@ async function postgresIdentity(
       native: engine,
       driver: 'database',
       dialect: 'postgres',
-      compileMigrations: async () => POSTGRES_AUTH_STATEMENTS.join(';\n'),
       tablesMissing,
       close,
     }
@@ -336,12 +356,16 @@ async function sqliteIdentity(
   const { DatabaseSync } = await import('node:sqlite')
   const db = new DatabaseSync(file)
   try {
-    const tablesMissing = async (): Promise<boolean> =>
-      NATIVE_TABLES.some(
-        (name) =>
-          db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name) ===
-          undefined,
-      )
+    const tablesMissing = async (): Promise<boolean> => {
+      try {
+        db.prepare(SCHEMA_PROBE)
+        return false
+      } catch (error) {
+        // node:sqlite reports "no such table" / "no such column" while preparing.
+        if (/no such (?:table|column)/.test(error instanceof Error ? error.message : '')) return true
+        throw error
+      }
+    }
     if (options.verifyTables !== false && (await tablesMissing()))
       throw new IdentitySetupError(MIGRATIONS_HINT)
     const { sqliteAuthStore, sqliteCounterStore } = await import('../engine/store/sqlite.ts')
@@ -351,7 +375,6 @@ async function sqliteIdentity(
       native: engine,
       driver: 'database',
       dialect: 'sqlite',
-      compileMigrations: async () => SQLITE_SCHEMA.trim(),
       tablesMissing,
       close: async () => db.close(),
     }

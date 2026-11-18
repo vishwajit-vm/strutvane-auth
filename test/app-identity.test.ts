@@ -1,7 +1,7 @@
 // Engine selection for apps, the admin API and the contributed commands, without Docker (the
 // PostgreSQL success paths run in test/integration/app-identity.test.ts).
 import { mkdtempSync, rmSync } from 'node:fs'
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { type AddressInfo, createServer, type Socket } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -21,8 +21,9 @@ import {
   poolOptionsFrom,
   sqliteFileFrom,
 } from '../src/identity/app-identity.ts'
+import { AUTH_MIGRATIONS } from '../src/migrations.ts'
 import { createAuthProvider } from '../src/provider.ts'
-import { SQLITE_SCHEMA } from '../src/sqlite.ts'
+import { sqliteWithAuthSchema } from './support/auth-schema.ts'
 
 const dirs: string[] = []
 afterEach(async () => {
@@ -103,10 +104,8 @@ describe('createAppIdentity: which engine an app runs on', () => {
       await expect(
         createAppIdentity({ ...base, auth: {}, database, root: dir, appKey: APP_KEY }),
       ).rejects.toThrow(/do not exist yet/)
-      const { DatabaseSync } = await import('node:sqlite')
-      const db = new DatabaseSync(join(dir, 'app.sqlite'))
-      db.exec(SQLITE_SCHEMA)
-      db.close()
+      // `node strut migrate` ran the skeleton's users migration and auth's migrations.
+      sqliteWithAuthSchema(join(dir, 'app.sqlite')).close()
       const id = await createAppIdentity({
         ...base,
         auth: {},
@@ -117,7 +116,8 @@ describe('createAppIdentity: which engine an app runs on', () => {
       try {
         expect([id.driver, id.dialect, id.engine.name]).toEqual(['database', 'sqlite', 'native'])
         expect(await id.tablesMissing?.()).toBe(false)
-        expect(await id.compileMigrations?.()).toContain('CREATE TABLE IF NOT EXISTS users')
+        // The native engine never generates DDL: the tables are the app's migrations.
+        expect(id.compileMigrations).toBeUndefined()
         const created = await id.engine.createUserAsSystem({
           email: 'ada@acme.test',
           password: 'a long enough password',
@@ -144,7 +144,11 @@ describe('createAppIdentity: which engine an app runs on', () => {
       expect(
         sqliteFileFrom({ default: 'sqlite', connection: { url: ':memory:' } }, dir),
       ).toBeUndefined()
-      expect(sqliteFileFrom({ default: 'sqlite' }, dir)).toBe(join(dir, 'storage/database.sqlite'))
+      expect(sqliteFileFrom({ default: 'sqlite' }, dir)).toBe(join(dir, 'database/database.sqlite'))
+      // The skeleton's config/database.ts: a flat `database` key holds the SQLite file.
+      expect(sqliteFileFrom({ default: 'sqlite', database: 'database/app.sqlite' }, dir)).toBe(
+        join(dir, 'database/app.sqlite'),
+      )
       await expect(
         createAppIdentity({
           ...base,
@@ -319,7 +323,6 @@ describe('admin API and commands without a persistent store', () => {
 
   test('commands: usage errors exit 2, setup problems 3, unreachable databases 5', async () => {
     const memory = await project({ 'config/auth.ts': 'export default {}\n' })
-    expect((await run('auth:migration', cli(memory).ctx))?.exitCode).toBe(3)
     expect((await run('auth:user:create', cli(memory).ctx))?.exitCode).toBe(2)
     expect(
       (
@@ -360,8 +363,46 @@ describe('admin API and commands without a persistent store', () => {
         "export default { default: 'postgres', connection: { host: '127.0.0.1', port: 1, user: 'u', database: 'd' } }\n",
     })
     const r = cli(down)
-    expect((await run('auth:migration', r.ctx))?.exitCode).toBe(5)
-    expect(r.lines.join()).toMatch(/Cannot reach the database/)
+    expect((await run('tenant:create', cli(down, { name: 'A', slug: 'a', owner: 'a@b.test' }).ctx))?.exitCode).toBe(5)
+    process.env['SV_AUTH_PW'] = 'long-enough-password'
+    expect(
+      (
+        await run(
+          'auth:user:create',
+          cli(down, { email: 'a@b.test', name: 'A', 'password-env': 'SV_AUTH_PW' }).ctx,
+        )
+      )?.exitCode,
+    ).toBe(5)
+    delete process.env['SV_AUTH_PW']
+    // auth:migration needs no database: it only copies files (decision #2).
+    expect((await run('auth:migration', r.ctx))?.exitCode).toBeUndefined()
+    // The deprecated Better Auth adapter still compiles SQL, so it needs a database.
+    const legacy = await project({
+      '.env': `APP_KEY=${APP_KEY}\n`,
+      'config/auth.ts': `export default { identity: 'better-auth' }\n`,
+    })
+    expect((await run('auth:migration', cli(legacy).ctx))?.exitCode).toBe(3)
+  })
+
+  test('auth:migration copies the shipped migrations once and never overwrites the app\'s copy', async () => {
+    const root = await project({ 'config/auth.ts': 'export default {}\n' })
+    const dir = join(root, 'database', 'migrations')
+    const first = cli(root)
+    expect((await run('auth:migration', first.ctx))?.data).toEqual({
+      copied: AUTH_MIGRATIONS.map((f) => `database/migrations/${f}`),
+      present: [],
+    })
+    expect(first.lines.join('\n')).toMatch(/node strut migrate/)
+    // The app edits its copy; a second run leaves it alone.
+    const edited = join(dir, AUTH_MIGRATIONS[0] ?? '')
+    await writeFile(edited, '// mine\n')
+    const again = cli(root)
+    expect((await run('auth:migration', again.ctx))?.data).toEqual({
+      copied: [],
+      present: AUTH_MIGRATIONS.map((f) => `database/migrations/${f}`),
+    })
+    expect(again.lines.join('\n')).toMatch(/already in database\/migrations/)
+    expect(await readFile(edited, 'utf8')).toBe('// mine\n')
   })
 
   test('migration files: timestamp names and framework breakpoints', () => {

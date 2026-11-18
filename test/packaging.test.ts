@@ -54,7 +54,7 @@ describe('packaging: one kernel', () => {
     // (#123) and the `field` member on validation issues (#69), which this package relies on.
     expect(range).toBe('^0.2.0-next.0')
     // The dev copy we test against is the train's version, and the compat range matches the peer.
-    expect(pkg.devDependencies?.[FRAMEWORK]).toBe('0.2.0-next.0')
+    expect(pkg.devDependencies?.[FRAMEWORK]).toBe('0.2.0-next.1')
     expect(pkg.strutvane?.compat).toBe('^0.2.0-next.0')
   })
 

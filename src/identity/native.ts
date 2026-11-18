@@ -34,6 +34,7 @@ import type { AuthEventSink } from '../engine/ports/events.ts'
 import type { AuthMail, AuthMailer } from '../engine/ports/mailer.ts'
 import type { AuthStore } from '../engine/ports/store.ts'
 import { memoryAuthStore, memoryCounterStore } from '../engine/store/memory.ts'
+import { isUserId } from '../engine/tokens/formats.ts'
 import { resolveClientIp, trustedProxies } from '../http/client-ip.ts'
 import { requestMeta } from '../http/request-meta.ts'
 import {
@@ -187,8 +188,16 @@ const membership = (team: {
   Object.freeze({ tenantId: team.id, name: team.name, slug: team.slug ?? '', roles: [team.role] })
 
 /** System operations take ids from seeders and admins: refuse anything that is not one. */
-function assertIds(...ids: unknown[]): void {
-  if (ids.some((id) => typeof id !== 'string' || !UUID.test(id)))
+function assertTenantId(id: unknown): asserts id is string {
+  if (typeof id !== 'string' || !UUID.test(id)) throw new AuthError('validation_failed')
+}
+
+/**
+ * A user id: the app's `users` table key (an integer, decision #2) or, in memory, a UUID. UUIDs
+ * are lower-cased like tenant ids; an integer id is already canonical.
+ */
+function assertUserId(id: unknown): asserts id is string {
+  if (typeof id !== 'string' || !isUserId(id.toLowerCase()))
     throw new AuthError('validation_failed')
 }
 
@@ -461,7 +470,8 @@ export function createNativeEngine(options: NativeEngineOptions): NativeIdentity
 
     addMemberAsSystem: (input) =>
       system('addMemberAsSystem', async () => {
-        assertIds(input.tenantId, input.userId)
+        assertTenantId(input.tenantId)
+        assertUserId(input.userId)
         const outcome = await auth.system.setMember({
           teamId: input.tenantId.toLowerCase(),
           userId: input.userId.toLowerCase(),
@@ -473,7 +483,8 @@ export function createNativeEngine(options: NativeEngineOptions): NativeIdentity
 
     removeMemberAsSystem: (input) =>
       system('removeMemberAsSystem', async () => {
-        assertIds(input.tenantId, input.userId)
+        assertTenantId(input.tenantId)
+        assertUserId(input.userId)
         const outcome = await auth.system.removeMember({
           teamId: input.tenantId.toLowerCase(),
           userId: input.userId.toLowerCase(),
@@ -503,7 +514,7 @@ export function createNativeEngine(options: NativeEngineOptions): NativeIdentity
 
     createTenantAsSystem: (input) =>
       system('createTenantAsSystem', async () => {
-        assertIds(input.ownerUserId)
+        assertUserId(input.ownerUserId)
         if (typeof input.slug !== 'string') throw new AuthError('validation_failed')
         const team = await auth.system.createTeam({
           name: input.name,
@@ -523,7 +534,7 @@ export function createNativeEngine(options: NativeEngineOptions): NativeIdentity
 
     listMembersAsSystem: (input) =>
       system('listMembersAsSystem', async () => {
-        assertIds(input.tenantId)
+        assertTenantId(input.tenantId)
         return (await auth.system.listMembers(input.tenantId.toLowerCase())).map(
           ({ member, user }) =>
             Object.freeze({

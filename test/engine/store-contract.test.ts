@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
@@ -8,14 +8,17 @@ import type { AuthStore, UserRecord } from '../../src/engine/ports/store.ts'
 import { memoryAuthStore, memoryCounterStore } from '../../src/engine/store/memory.ts'
 import { postgresAuthStore, postgresCounterStore } from '../../src/engine/store/postgres.ts'
 import { sqliteAuthStore, sqliteCounterStore } from '../../src/engine/store/sqlite.ts'
+import { isUserId } from '../../src/engine/tokens/formats.ts'
+import { sqliteWithAuthSchema } from '../support/auth-schema.ts'
 import { Browser, harness, rejectsWith, START } from './helpers/harness.ts'
 import { pgliteSchemaClient } from './helpers/pg.ts'
 
 const dir = mkdtempSync(join(tmpdir(), 'sv-auth-'))
 /** Every file-backed connection, closed before the folder is removed (Windows keeps open files locked). */
 const opened: DatabaseSync[] = []
+/** A connection to `file`; the first one migrates it (as `node strut migrate` would). */
 const openFile = (file: string): DatabaseSync => {
-  const db = new DatabaseSync(file)
+  const db = existsSync(file) ? new DatabaseSync(file) : sqliteWithAuthSchema(file)
   opened.push(db)
   return db
 }
@@ -23,6 +26,8 @@ afterAll(() => {
   for (const db of opened) db.close()
   rmSync(dir, { recursive: true, force: true })
 })
+
+const UUID_1 = '00000000-0000-4000-8000-000000000001'
 
 const user = (id: string, email: string): UserRecord => ({
   id,
@@ -39,7 +44,7 @@ const user = (id: string, email: string): UserRecord => ({
 
 const STORES: [string, () => AuthStore][] = [
   ['memory', () => memoryAuthStore()],
-  ['sqlite', () => sqliteAuthStore(new DatabaseSync(':memory:'))],
+  ['sqlite', () => sqliteAuthStore(sqliteWithAuthSchema())],
   ['postgres', () => postgresAuthStore(pgliteSchemaClient())],
 ]
 
@@ -52,12 +57,65 @@ describe.each(STORES)('store contract (%s)', (_name, make) => {
 
   it('advanceTotpStep only moves forward', async () => {
     const s = make()
-    await s.createUser(user('u1', 'a@b.io'))
-    expect(await s.advanceTotpStep('u1', 10)).toBe(true)
-    expect(await s.advanceTotpStep('u1', 10)).toBe(false)
-    expect(await s.advanceTotpStep('u1', 9)).toBe(false)
-    expect(await s.advanceTotpStep('u1', 11)).toBe(true)
+    const id = (await s.createUser(user(UUID_1, 'a@b.io')))?.id ?? ''
+    expect(await s.advanceTotpStep(id, 10)).toBe(true)
+    expect(await s.advanceTotpStep(id, 10)).toBe(false)
+    expect(await s.advanceTotpStep(id, 9)).toBe(false)
+    expect(await s.advanceTotpStep(id, 11)).toBe(true)
     expect(await s.advanceTotpStep('missing', 1)).toBe(false)
+  })
+
+  it('user ids are the store\'s (the users table key); malformed ids are "not found", never an error', async () => {
+    const s = make()
+    const created = await s.createUser(user(UUID_1, 'a@b.io'))
+    expect(created !== undefined && isUserId(created.id)).toBe(true)
+    expect((await s.findUserById(created?.id ?? ''))?.email).toBe('a@b.io')
+    for (const bad of ['abc', '1; DROP TABLE users', '01', '-1', '1.5', '9223372036854775808', ''])
+      expect(await s.findUserById(bad), bad).toBeUndefined()
+    expect(await s.listUserRoles('abc')).toEqual([])
+    await s.updateUser('abc', { name: 'x' })
+    expect(await s.advanceTotpStep('abc', 1)).toBe(false)
+  })
+
+  it('user times round-trip to the millisecond (stored as the framework\'s timestamps)', async () => {
+    const s = make()
+    const created = await s.createUser({ ...user(UUID_1, 'a@b.io'), emailVerifiedAt: START + 7 })
+    const id = created?.id ?? ''
+    expect(created?.createdAt).toBe(START)
+    expect(created?.emailVerifiedAt).toBe(START + 7)
+    await s.updateUser(id, { twoFactorConfirmedAt: START + 9, emailVerifiedAt: null, name: 'Ada' })
+    const after = await s.findUserById(id)
+    expect(after?.twoFactorConfirmedAt).toBe(START + 9)
+    expect(after?.emailVerifiedAt).toBeNull()
+    expect(after?.name).toBe('Ada')
+  })
+
+  it('roles belong to the user row', async () => {
+    const s = make()
+    const id = (await s.createUser(user(UUID_1, 'a@b.io')))?.id ?? ''
+    await s.setUserRoles(id, ['admin', 'admin', 'member'])
+    expect(await s.listUserRoles(id)).toEqual(['admin', 'member'])
+    await s.setUserRoles(id, [])
+    expect(await s.listUserRoles(id)).toEqual([])
+  })
+
+  it('a passkey with a 1024-character credential id (the WebAuthn maximum) is stored and found', async () => {
+    const s = make()
+    const credentialId = 'A'.repeat(1024)
+    await s.addPasskey({
+      id: 'p-long',
+      userId: 'u1',
+      name: 'x',
+      credentialId,
+      publicKey: 'k',
+      counter: 0,
+      transports: ['usb'],
+      backedUp: true,
+      createdAt: 1,
+      lastUsedAt: null,
+    })
+    expect((await s.findPasskeyByCredentialId(credentialId))?.id).toBe('p-long')
+    expect(await s.findPasskeyByCredentialId(`${credentialId.slice(1)}B`)).toBeUndefined()
   })
 
   it('one-time records are single-use and separated by purpose', async () => {
@@ -208,14 +266,13 @@ describe('PostgreSQL: several app instances on one database, rows that fail clos
   it('unknown session states, methods and one-time purposes fail closed', async () => {
     const client = pgliteSchemaClient()
     const store = postgresAuthStore(client)
-    await client.query('ALTER TABLE sessions DROP CONSTRAINT IF EXISTS sessions_state_check')
     for (const [state, method] of [
       ['Two-Factor', 'password'],
       ['pending', 'password'],
       ['active', 'sso'],
     ] as const) {
       await client.query(
-        `INSERT INTO sessions (id, user_id, state, method, created_at, last_activity, expires_at, idle_ms, remember)
+        `INSERT INTO auth_sessions (id, user_id, state, method, created_at, last_activity, expires_at, idle_ms, remember)
          VALUES ($1, 'u', $2, $3, 1, 1, 9999999999999, 1000, false)`,
         [`${state}|${method}`, state, method],
       )
@@ -233,9 +290,19 @@ describe('PostgreSQL: several app instances on one database, rows that fail clos
   it('a corrupt number column fails closed instead of reading as NaN', async () => {
     const client = pgliteSchemaClient()
     const store = postgresAuthStore(client)
-    await store.createUser(user('u', 'a@b.io'))
-    await client.query("ALTER TABLE users ALTER COLUMN created_at TYPE text USING 'soon'")
-    await expect(store.findUserById('u')).rejects.toThrow(TypeError)
+    const id = (await store.createUser(user(UUID_1, 'a@b.io')))?.id ?? ''
+    await client.query("ALTER TABLE users ALTER COLUMN two_factor_last_step TYPE text USING 'soon'")
+    await expect(store.findUserById(id)).rejects.toThrow(TypeError)
+  })
+
+  it('a corrupt timestamp in the users table fails closed instead of reading as NaN', async () => {
+    const client = pgliteSchemaClient()
+    const store = postgresAuthStore(client)
+    const id = (await store.createUser(user(UUID_1, 'a@b.io')))?.id ?? ''
+    await client.query(
+      "ALTER TABLE users ALTER COLUMN email_verified_at TYPE text USING 'yesterday-ish'",
+    )
+    await expect(store.findUserById(id)).rejects.toThrow(TypeError)
   })
 })
 
@@ -252,20 +319,19 @@ describe('SQLite across connections (several app processes on one database)', ()
       createdAt: 1,
       expiresAt: 2,
     })
-    await a.createUser(user('u', 'a@b.io'))
+    const id = (await a.createUser(user(UUID_1, 'a@b.io')))?.id ?? ''
     expect(await b.consumeOneTime('d', 'email-link')).toBeDefined()
     expect(await a.consumeOneTime('d', 'email-link')).toBeUndefined()
-    expect(await b.advanceTotpStep('u', 5)).toBe(true)
-    expect(await a.advanceTotpStep('u', 5)).toBe(false)
+    expect(await b.advanceTotpStep(id, 5)).toBe(true)
+    expect(await a.advanceTotpStep(id, 5)).toBe(false)
   })
 
   it('an unknown session state or method in a row fails closed (never read as an active session)', async () => {
     // An ORM store or a hand-edited row may hold values the schema CHECK would refuse (a
     // case-insensitive column, a new state from a later version). Mapping "anything else" to
     // 'active' would turn a pending two-factor session into a signed-in one.
-    const db = new DatabaseSync(':memory:')
+    const db = sqliteWithAuthSchema()
     const store = sqliteAuthStore(db)
-    db.exec('PRAGMA ignore_check_constraints = ON')
     for (const [state, method] of [
       ['Two-Factor', 'password'],
       ['pending', 'password'],
@@ -273,7 +339,7 @@ describe('SQLite across connections (several app processes on one database)', ()
       ['active', 'sso'],
     ] as const) {
       db.prepare(
-        `INSERT INTO sessions (id, user_id, state, method, created_at, last_activity, expires_at, idle_ms, remember)
+        `INSERT INTO auth_sessions (id, user_id, state, method, created_at, last_activity, expires_at, idle_ms, remember)
          VALUES (?, 'u', ?, ?, 1, 1, 9999999999999, 1000, 0)`,
       ).run(`${state}|${method}`, state, method)
       await expect(store.findSession(`${state}|${method}`), `${state} ${method}`).rejects.toThrow(
@@ -364,7 +430,7 @@ describe('SQLite across connections (several app processes on one database)', ()
       ['memory', (c: ReturnType<typeof manualClock>) => memoryCounterStore(c)],
       [
         'sqlite',
-        (c: ReturnType<typeof manualClock>) => sqliteCounterStore(new DatabaseSync(':memory:'), c),
+        (c: ReturnType<typeof manualClock>) => sqliteCounterStore(sqliteWithAuthSchema(), c),
       ],
       [
         'postgres',

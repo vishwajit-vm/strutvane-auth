@@ -24,6 +24,10 @@
  * Every value is bound (`$1`), never interpolated. Column names in `UPDATE … SET` come from fixed
  * maps, never from input. Unknown enum values in a row fail closed (they throw).
  *
+ * The tables come from migrations the app runs, never from this store (decision #2): the app's
+ * own `users` table (see `users-table.ts` for how its integer ids and timestamps are mapped) plus
+ * auth's columns and tables from `migrations/` in this package. A missing table is a query error.
+ *
  * @module
  */
 import type { Clock } from '../ports/clock.ts'
@@ -40,7 +44,8 @@ import type {
   TokenRecord,
   UserRecord,
 } from '../ports/store.ts'
-import { POSTGRES_AUTH_STATEMENTS } from './postgres-schema.ts'
+import { credentialKey } from './credential-key.ts'
+import { fromTimestamp, toTimestamp, userIdFrom, userKey } from './users-table.ts'
 
 /** A row as a driver returns it. */
 export type PostgresRow = Readonly<Record<string, unknown>>
@@ -175,19 +180,6 @@ export function frameworkDatabaseClient(db: FrameworkDatabaseLike): PostgresClie
   return wrap(db)
 }
 
-/**
- * Create the identity tables if they are missing (idempotent). Apps normally get them from the
- * shipped migration through `migrate`; this is for tests, demos and scripts.
- *
- * @example
- * await ensurePostgresAuthSchema(client)
- */
-export async function ensurePostgresAuthSchema(db: PostgresClient): Promise<void> {
-  await db.transaction(async (tx) => {
-    for (const statement of POSTGRES_AUTH_STATEMENTS) await tx.query(statement)
-  })
-}
-
 function str(row: PostgresRow, key: string): string {
   const v = row[key]
   if (typeof v !== 'string') throw new TypeError(`postgres store: column ${key} is not text`)
@@ -252,16 +244,17 @@ function oneOf<T extends string>(row: PostgresRow, key: string, allowed: readonl
 }
 
 const toUser = (r: PostgresRow): UserRecord => ({
-  id: str(r, 'id'),
+  id: userIdFrom(r['id'], 'id'),
   email: str(r, 'email'),
   name: str(r, 'name'),
   passwordHash: strOrNull(r, 'password'),
-  emailVerifiedAt: numOrNull(r, 'email_verified_at'),
+  emailVerifiedAt: fromTimestamp(r['email_verified_at'], 'email_verified_at'),
   twoFactorSecret: strOrNull(r, 'two_factor_secret'),
-  twoFactorConfirmedAt: numOrNull(r, 'two_factor_confirmed_at'),
+  twoFactorConfirmedAt: fromTimestamp(r['two_factor_confirmed_at'], 'two_factor_confirmed_at'),
   twoFactorLastStep: numOrNull(r, 'two_factor_last_step'),
   currentTeamId: strOrNull(r, 'current_team_id'),
-  createdAt: num(r, 'created_at'),
+  // Rows the app inserted without timestamps have none; the engine only displays it.
+  createdAt: fromTimestamp(r['created_at'], 'created_at') ?? 0,
 })
 
 const toSession = (r: PostgresRow): SessionRecord => ({
@@ -349,6 +342,19 @@ const USER_COLUMNS: Readonly<Record<string, string>> = {
   twoFactorLastStep: 'two_factor_last_step',
   currentTeamId: 'current_team_id',
 }
+/** Patch keys whose users-table column is a timestamp (written as ISO 8601, like the ORM). */
+const USER_TIMESTAMPS: ReadonlySet<string> = new Set(['emailVerifiedAt', 'twoFactorConfirmedAt'])
+
+/** A user patch with its timestamps converted to what the users table stores. */
+function userPatch(patch: object): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(patch))
+    out[key] =
+      USER_TIMESTAMPS.has(key) && (typeof value === 'number' || value === null)
+        ? toTimestamp(value)
+        : value
+  return out
+}
 const SESSION_COLUMNS: Readonly<Record<string, string>> = {
   lastSeenAt: 'last_activity',
   passwordConfirmedAt: 'password_confirmed_at',
@@ -377,8 +383,8 @@ function setClause(
 }
 
 /**
- * An {@link AuthStore} on PostgreSQL. The tables come from the shipped migration (`migrate`), or
- * from {@link ensurePostgresAuthSchema} in tests.
+ * An {@link AuthStore} on PostgreSQL. The tables come from the app's migrations (`migrate`): the
+ * app's `users` table plus auth's shipped migrations. This store never creates or alters a table.
  *
  * @example
  * ```ts
@@ -397,27 +403,31 @@ export function postgresAuthStore(db: PostgresClient): AuthStore {
 
   return {
     async createUser(u) {
+      // The id is the users table's own (auto-increment): `u.id` is the engine's proposal, used
+      // only by the in-memory store. The email's unique index makes a taken address a no-op.
+      const createdAt = toTimestamp(u.createdAt)
       const row = await one(
-        `INSERT INTO users (id, email, name, password, email_verified_at, two_factor_secret,
-           two_factor_confirmed_at, two_factor_last_step, current_team_id, created_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) ON CONFLICT DO NOTHING RETURNING *`,
+        `INSERT INTO users (email, name, password, email_verified_at, two_factor_secret,
+           two_factor_confirmed_at, two_factor_last_step, current_team_id, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9) ON CONFLICT DO NOTHING RETURNING *`,
         [
-          u.id,
           u.email,
           u.name,
           u.passwordHash,
-          u.emailVerifiedAt,
+          toTimestamp(u.emailVerifiedAt),
           u.twoFactorSecret,
-          u.twoFactorConfirmedAt,
+          toTimestamp(u.twoFactorConfirmedAt),
           u.twoFactorLastStep,
           u.currentTeamId,
-          u.createdAt,
+          createdAt,
         ],
       )
       return row ? toUser(row) : undefined
     },
     async findUserById(id) {
-      const row = await one('SELECT * FROM users WHERE id = $1', [id])
+      const key = userKey(id)
+      if (key === undefined) return undefined
+      const row = await one('SELECT * FROM users WHERE id = $1', [key])
       return row ? toUser(row) : undefined
     },
     async findUserByEmail(email) {
@@ -425,38 +435,46 @@ export function postgresAuthStore(db: PostgresClient): AuthStore {
       return row ? toUser(row) : undefined
     },
     async updateUser(id, patch) {
-      const set = setClause(patch, USER_COLUMNS)
-      if (set.sql)
-        await db.query(`UPDATE users SET ${set.sql} WHERE id = $${set.values.length + 1}`, [
-          ...set.values,
-          id,
-        ])
+      const key = userKey(id)
+      const set = setClause(userPatch(patch), USER_COLUMNS)
+      if (key === undefined || !set.sql) return
+      await db.query(
+        `UPDATE users SET ${set.sql}, updated_at = $${set.values.length + 1}
+         WHERE id = $${set.values.length + 2}`,
+        [...set.values, new Date().toISOString(), key],
+      )
     },
     async advanceTotpStep(userId, step) {
+      const key = userKey(userId)
+      if (key === undefined) return false
       return (
         (await count(
           `UPDATE users SET two_factor_last_step = $1
            WHERE id = $2 AND (two_factor_last_step IS NULL OR two_factor_last_step < $1) RETURNING 1`,
-          [step, userId],
+          [step, key],
         )) === 1
       )
     },
     async listUserRoles(userId) {
+      const key = userKey(userId)
+      if (key === undefined) return []
       return (
-        await all('SELECT role FROM user_roles WHERE user_id = $1 ORDER BY role', [userId])
+        await all('SELECT role FROM user_roles WHERE user_id = $1 ORDER BY role', [key])
       ).map((r) => str(r, 'role'))
     },
     async setUserRoles(userId, roles) {
+      const key = userKey(userId)
+      if (key === undefined) throw new TypeError('postgres store: not a users table id')
       await db.transaction(async (tx) => {
-        await tx.query('DELETE FROM user_roles WHERE user_id = $1', [userId])
+        await tx.query('DELETE FROM user_roles WHERE user_id = $1', [key])
         for (const role of new Set(roles))
-          await tx.query('INSERT INTO user_roles (user_id, role) VALUES ($1, $2)', [userId, role])
+          await tx.query('INSERT INTO user_roles (user_id, role) VALUES ($1, $2)', [key, role])
       })
     },
 
     async createSession(s) {
       await db.query(
-        `INSERT INTO sessions (id, user_id, state, method, created_at, last_activity, expires_at,
+        `INSERT INTO auth_sessions (id, user_id, state, method, created_at, last_activity, expires_at,
            idle_ms, remember, password_confirmed_at, impersonator_id, ip_address, user_agent)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
         [
@@ -477,30 +495,30 @@ export function postgresAuthStore(db: PostgresClient): AuthStore {
       )
     },
     async findSession(digest) {
-      const row = await one('SELECT * FROM sessions WHERE id = $1', [digest])
+      const row = await one('SELECT * FROM auth_sessions WHERE id = $1', [digest])
       return row ? toSession(row) : undefined
     },
     async updateSession(digest, patch) {
       const set = setClause(patch, SESSION_COLUMNS)
       if (set.sql)
-        await db.query(`UPDATE sessions SET ${set.sql} WHERE id = $${set.values.length + 1}`, [
+        await db.query(`UPDATE auth_sessions SET ${set.sql} WHERE id = $${set.values.length + 1}`, [
           ...set.values,
           digest,
         ])
     },
     async deleteSession(digest) {
-      await db.query('DELETE FROM sessions WHERE id = $1', [digest])
+      await db.query('DELETE FROM auth_sessions WHERE id = $1', [digest])
     },
     async deleteUserSessions(userId, exceptDigest) {
       return exceptDigest === undefined
-        ? count('DELETE FROM sessions WHERE user_id = $1 RETURNING 1', [userId])
-        : count('DELETE FROM sessions WHERE user_id = $1 AND id <> $2 RETURNING 1', [
+        ? count('DELETE FROM auth_sessions WHERE user_id = $1 RETURNING 1', [userId])
+        : count('DELETE FROM auth_sessions WHERE user_id = $1 AND id <> $2 RETURNING 1', [
             userId,
             exceptDigest,
           ])
     },
     async listUserSessions(userId) {
-      return (await all('SELECT * FROM sessions WHERE user_id = $1', [userId])).map(toSession)
+      return (await all('SELECT * FROM auth_sessions WHERE user_id = $1', [userId])).map(toSession)
     },
 
     async putOneTime(r) {
@@ -561,14 +579,15 @@ export function postgresAuthStore(db: PostgresClient): AuthStore {
 
     async addPasskey(p) {
       await db.query(
-        `INSERT INTO passkeys (id, user_id, name, credential_id, public_key, counter, transports,
-           backed_up, created_at, last_used_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10)`,
+        `INSERT INTO passkeys (id, user_id, name, credential_id, credential_key, public_key, counter,
+           transports, backed_up, created_at, last_used_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11)`,
         [
           p.id,
           p.userId,
           p.name,
           p.credentialId,
+          credentialKey(p.credentialId),
           p.publicKey,
           p.counter,
           JSON.stringify(p.transports),
@@ -579,7 +598,10 @@ export function postgresAuthStore(db: PostgresClient): AuthStore {
       )
     },
     async findPasskeyByCredentialId(credentialId) {
-      const row = await one('SELECT * FROM passkeys WHERE credential_id = $1', [credentialId])
+      const row = await one(
+        'SELECT * FROM passkeys WHERE credential_key = $1 AND credential_id = $2',
+        [credentialKey(credentialId), credentialId],
+      )
       return row ? toPasskey(row) : undefined
     },
     async listPasskeys(userId) {

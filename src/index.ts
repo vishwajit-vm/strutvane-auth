@@ -108,6 +108,15 @@ export {
 } from './errors.ts'
 export { AUTH_DOMAIN_EVENTS, type AuthDomainPayload, domainEventSink } from './events.ts'
 export {
+  createFirstAdmin,
+  type FirstAdminConnection,
+  FirstAdminError,
+  type FirstAdminErrorCode,
+  type FirstAdminInput,
+  type FirstAdminOptions,
+  type FirstAdminResult,
+} from './first-admin.ts'
+export {
   normalizeIp,
   rateLimitSubject,
   resolveClientIp,
@@ -155,6 +164,12 @@ export {
   type RateLimitRule,
   type RateLimitStore,
 } from './identity/rate-limit.ts'
+export {
+  AUTH_MIGRATIONS,
+  authMigrationsDirectory,
+  type CopiedMigrations,
+  copyAuthMigrations,
+} from './migrations.ts'
 export {
   type AuthMiddlewareOptions,
   type AuthOutcome,

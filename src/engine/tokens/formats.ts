@@ -118,9 +118,40 @@ export function isUuid(value: unknown): value is string {
   return typeof value === 'string' && UUID.test(value)
 }
 
+/** The largest id a signed 64-bit `bigint` primary key holds. */
+const MAX_BIGINT_ID = 9223372036854775807n
+
+/**
+ * True for a row id of the app's `users` table: a canonical positive integer (`'1'`, `'42'`; no
+ * sign, no leading zero, at most a signed 64-bit `bigint`). The users table belongs to the app
+ * (decision #2), and its `t.id()` key is an auto-increment integer.
+ *
+ * @example
+ * isIntegerId('42') // true
+ * isIntegerId('042') // false
+ */
+export function isIntegerId(value: unknown): value is string {
+  return (
+    typeof value === 'string' && /^[1-9][0-9]{0,18}$/.test(value) && BigInt(value) <= MAX_BIGINT_ID
+  )
+}
+
+/**
+ * True for a user id this engine can hold: the users table's integer id (persistent stores) or a
+ * lowercase UUID (the in-memory store). Anything else is refused before any lookup.
+ *
+ * @example
+ * isUserId('7') // true
+ * isUserId('7; DROP TABLE users') // false
+ */
+export function isUserId(value: unknown): value is string {
+  return isIntegerId(value) || isUuid(value)
+}
+
 /**
  * Parse a verification link's parts from loose input (route params + query). Refuses anything
- * that is not exactly a UUID, a 40-hex email hash, an integer expiry and a 64-hex signature.
+ * that is not exactly a user id ({@link isUserId}), a 40-hex email hash, an integer expiry and a
+ * 64-hex signature.
  */
 export function parseVerificationLink(input: {
   readonly id?: unknown
@@ -129,7 +160,7 @@ export function parseVerificationLink(input: {
   readonly signature?: unknown
 }): VerificationLinkParts | undefined {
   const { id, hash, expires, signature } = input
-  if (!isUuid(id)) return undefined
+  if (!isUserId(id)) return undefined
   if (typeof hash !== 'string' || !/^[0-9a-f]{40}$/.test(hash)) return undefined
   if (typeof signature !== 'string' || !/^[0-9a-f]{64}$/.test(signature)) return undefined
   const exp =

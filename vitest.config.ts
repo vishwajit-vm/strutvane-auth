@@ -10,6 +10,8 @@ export default mergeConfig(
   defineConfig({
     test: {
       exclude: ['test/integration/**', 'node_modules/**', 'dist/**'],
+      // The app schema (skeleton users table + auth's migrations), compiled once by the framework.
+      globalSetup: ['test/global-setup.ts'],
       testTimeout: 30_000,
       // PGlite boots a full Postgres in-process; under a loaded machine that can exceed 10 s.
       hookTimeout: 60_000,

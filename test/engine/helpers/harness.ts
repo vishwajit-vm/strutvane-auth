@@ -3,7 +3,7 @@
  * cookie jar, and recorders for mail, events and logs (the redaction tests scan them).
  */
 import { randomBytes } from 'node:crypto'
-import { DatabaseSync } from 'node:sqlite'
+import type { DatabaseSync } from 'node:sqlite'
 import { type Auth, createAuth } from '../../../src/engine/auth.ts'
 import { type AuthConfigInput, defineAuthConfig } from '../../../src/engine/config.ts'
 import { createScryptHasher, type PasswordHasher } from '../../../src/engine/password/hasher.ts'
@@ -21,6 +21,7 @@ import {
   postgresCounterStore,
 } from '../../../src/engine/store/postgres.ts'
 import { sqliteAuthStore, sqliteCounterStore } from '../../../src/engine/store/sqlite.ts'
+import { sqliteWithAuthSchema } from '../../support/auth-schema.ts'
 import { pgliteSchemaClient } from './pg.ts'
 
 /** The stores every behaviour suite runs against (postgres: PGlite, one schema per harness). */
@@ -105,7 +106,7 @@ export interface Harness {
 export function harness(options: HarnessOptions = {}): Harness {
   const clock = options.clock ?? manualClock(START)
   const kind = options.store ?? 'memory'
-  const db = options.db ?? (kind === 'sqlite' ? new DatabaseSync(':memory:') : undefined)
+  const db = options.db ?? (kind === 'sqlite' ? sqliteWithAuthSchema() : undefined)
   const pg = options.pg ?? (kind === 'postgres' ? pgliteSchemaClient() : undefined)
   const store = db ? sqliteAuthStore(db) : pg ? postgresAuthStore(pg) : memoryAuthStore()
   const counters = db

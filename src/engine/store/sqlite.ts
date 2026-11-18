@@ -5,6 +5,10 @@
  * `DELETE … RETURNING`, the TOTP replay guard is a conditional `UPDATE`, counters are one
  * `INSERT … ON conflict DO UPDATE … RETURNING`. Every value is bound, never interpolated.
  *
+ * The tables come from migrations the app runs, never from this store (decision #2): the app's
+ * own `users` table (see `users-table.ts` for how its integer ids and timestamps are mapped) plus
+ * auth's columns and tables from `migrations/` in this package.
+ *
  * @module
  */
 import type { DatabaseSync, SQLInputValue } from 'node:sqlite'
@@ -22,7 +26,8 @@ import type {
   TokenRecord,
   UserRecord,
 } from '../ports/store.ts'
-import { SQLITE_SCHEMA } from './sqlite-schema.ts'
+import { credentialKey } from './credential-key.ts'
+import { fromTimestamp, toTimestamp, userIdFrom, userKey } from './users-table.ts'
 
 type Row = Record<string, unknown>
 
@@ -58,16 +63,17 @@ function record(row: Row, key: string): Readonly<Record<string, string>> {
 }
 
 const toUser = (r: Row): UserRecord => ({
-  id: str(r, 'id'),
+  id: userIdFrom(r['id'], 'id'),
   email: str(r, 'email'),
   name: str(r, 'name'),
   passwordHash: strOrNull(r, 'password'),
-  emailVerifiedAt: numOrNull(r, 'email_verified_at'),
+  emailVerifiedAt: fromTimestamp(r['email_verified_at'], 'email_verified_at'),
   twoFactorSecret: strOrNull(r, 'two_factor_secret'),
-  twoFactorConfirmedAt: numOrNull(r, 'two_factor_confirmed_at'),
+  twoFactorConfirmedAt: fromTimestamp(r['two_factor_confirmed_at'], 'two_factor_confirmed_at'),
   twoFactorLastStep: numOrNull(r, 'two_factor_last_step'),
   currentTeamId: strOrNull(r, 'current_team_id'),
-  createdAt: num(r, 'created_at'),
+  // Rows the app inserted without timestamps have none; the engine only displays it.
+  createdAt: fromTimestamp(r['created_at'], 'created_at') ?? 0,
 })
 
 const SESSION_STATES: readonly SessionRecord['state'][] = ['active', 'two-factor']
@@ -168,6 +174,19 @@ const USER_COLUMNS = {
   twoFactorLastStep: 'two_factor_last_step',
   currentTeamId: 'current_team_id',
 } as const
+/** Patch keys whose users-table column is a timestamp (written as ISO 8601, like the ORM). */
+const USER_TIMESTAMPS: ReadonlySet<string> = new Set(['emailVerifiedAt', 'twoFactorConfirmedAt'])
+
+/** A user patch with its timestamps converted to what the users table stores. */
+function userPatch(patch: object): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(patch))
+    out[key] =
+      USER_TIMESTAMPS.has(key) && (typeof value === 'number' || value === null)
+        ? toTimestamp(value)
+        : value
+  return out
+}
 const SESSION_COLUMNS = {
   lastSeenAt: 'last_activity',
   passwordConfirmedAt: 'password_confirmed_at',
@@ -196,17 +215,17 @@ function setClause(
 }
 
 /**
- * An {@link AuthStore} on a `node:sqlite` database (the schema is created if missing).
+ * An {@link AuthStore} on a `node:sqlite` database. The tables must exist: the app's migrations
+ * create them (`node strut migrate`); this store never creates or alters one.
  *
  * @example
  * ```ts
  * import { DatabaseSync } from 'node:sqlite'
- * const store = sqliteAuthStore(new DatabaseSync('database/auth.sqlite'))
+ * const store = sqliteAuthStore(new DatabaseSync('database/database.sqlite'))
  * ```
  */
 export function sqliteAuthStore(db: DatabaseSync): AuthStore {
   db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;')
-  db.exec(SQLITE_SCHEMA)
   const get = (sql: string, ...params: SQLInputValue[]): Row | undefined =>
     db.prepare(sql).get(...params) as Row | undefined
   const all = (sql: string, ...params: SQLInputValue[]): Row[] =>
@@ -226,25 +245,30 @@ export function sqliteAuthStore(db: DatabaseSync): AuthStore {
 
   return {
     async createUser(u) {
+      // The id is the users table's own (auto-increment): `u.id` is the engine's proposal, used
+      // only by the in-memory store. The email's unique index makes a taken address a no-op.
+      const createdAt = toTimestamp(u.createdAt)
       const row = get(
-        `INSERT INTO users (id, email, name, password, email_verified_at, two_factor_secret, two_factor_confirmed_at,
-           two_factor_last_step, current_team_id, created_at)
+        `INSERT INTO users (email, name, password, email_verified_at, two_factor_secret, two_factor_confirmed_at,
+           two_factor_last_step, current_team_id, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON conflict(email) DO NOTHING RETURNING *`,
-        u.id,
         u.email,
         u.name,
         u.passwordHash,
-        u.emailVerifiedAt,
+        toTimestamp(u.emailVerifiedAt),
         u.twoFactorSecret,
-        u.twoFactorConfirmedAt,
+        toTimestamp(u.twoFactorConfirmedAt),
         u.twoFactorLastStep,
         u.currentTeamId,
-        u.createdAt,
+        createdAt,
+        createdAt,
       )
       return row ? toUser(row) : undefined
     },
     async findUserById(id) {
-      const row = get('SELECT * FROM users WHERE id = ?', id)
+      const key = userKey(id)
+      if (key === undefined) return undefined
+      const row = get('SELECT * FROM users WHERE id = ?', key)
       return row ? toUser(row) : undefined
     },
     async findUserByEmail(email) {
@@ -252,35 +276,48 @@ export function sqliteAuthStore(db: DatabaseSync): AuthStore {
       return row ? toUser(row) : undefined
     },
     async updateUser(id, patch) {
-      const set = setClause(patch, USER_COLUMNS)
-      if (set.sql) run(`UPDATE users SET ${set.sql} WHERE id = ?`, ...set.values, id)
+      const key = userKey(id)
+      const set = setClause(userPatch(patch), USER_COLUMNS)
+      if (key === undefined || !set.sql) return
+      run(
+        `UPDATE users SET ${set.sql}, updated_at = ? WHERE id = ?`,
+        ...set.values,
+        new Date().toISOString(),
+        key,
+      )
     },
     async advanceTotpStep(userId, step) {
+      const key = userKey(userId)
+      if (key === undefined) return false
       return (
         run(
           'UPDATE users SET two_factor_last_step = ? WHERE id = ? AND (two_factor_last_step IS NULL OR two_factor_last_step < ?)',
           step,
-          userId,
+          key,
           step,
         ) === 1
       )
     },
     async listUserRoles(userId) {
-      return all('SELECT role FROM user_roles WHERE user_id = ? ORDER BY role', userId).map((r) =>
+      const key = userKey(userId)
+      if (key === undefined) return []
+      return all('SELECT role FROM user_roles WHERE user_id = ? ORDER BY role', key).map((r) =>
         str(r, 'role'),
       )
     },
     async setUserRoles(userId, roles) {
+      const key = userKey(userId)
+      if (key === undefined) throw new TypeError('sqlite store: not a users table id')
       tx(() => {
-        run('DELETE FROM user_roles WHERE user_id = ?', userId)
+        run('DELETE FROM user_roles WHERE user_id = ?', key)
         for (const role of new Set(roles))
-          run('INSERT INTO user_roles (user_id, role) VALUES (?, ?)', userId, role)
+          run('INSERT INTO user_roles (user_id, role) VALUES (?, ?)', key, role)
       })
     },
 
     async createSession(s) {
       run(
-        `INSERT INTO sessions (id, user_id, state, method, created_at, last_activity, expires_at, idle_ms, remember,
+        `INSERT INTO auth_sessions (id, user_id, state, method, created_at, last_activity, expires_at, idle_ms, remember,
            password_confirmed_at, impersonator_id, ip_address, user_agent) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         s.digest,
         s.userId,
@@ -298,23 +335,23 @@ export function sqliteAuthStore(db: DatabaseSync): AuthStore {
       )
     },
     async findSession(digest) {
-      const row = get('SELECT * FROM sessions WHERE id = ?', digest)
+      const row = get('SELECT * FROM auth_sessions WHERE id = ?', digest)
       return row ? toSession(row) : undefined
     },
     async updateSession(digest, patch) {
       const set = setClause(patch, SESSION_COLUMNS)
-      if (set.sql) run(`UPDATE sessions SET ${set.sql} WHERE id = ?`, ...set.values, digest)
+      if (set.sql) run(`UPDATE auth_sessions SET ${set.sql} WHERE id = ?`, ...set.values, digest)
     },
     async deleteSession(digest) {
-      run('DELETE FROM sessions WHERE id = ?', digest)
+      run('DELETE FROM auth_sessions WHERE id = ?', digest)
     },
     async deleteUserSessions(userId, exceptDigest) {
       return exceptDigest === undefined
-        ? run('DELETE FROM sessions WHERE user_id = ?', userId)
-        : run('DELETE FROM sessions WHERE user_id = ? AND id <> ?', userId, exceptDigest)
+        ? run('DELETE FROM auth_sessions WHERE user_id = ?', userId)
+        : run('DELETE FROM auth_sessions WHERE user_id = ? AND id <> ?', userId, exceptDigest)
     },
     async listUserSessions(userId) {
-      return all('SELECT * FROM sessions WHERE user_id = ?', userId).map(toSession)
+      return all('SELECT * FROM auth_sessions WHERE user_id = ?', userId).map(toSession)
     },
 
     async putOneTime(r) {
@@ -375,12 +412,13 @@ export function sqliteAuthStore(db: DatabaseSync): AuthStore {
 
     async addPasskey(p) {
       run(
-        `INSERT INTO passkeys (id, user_id, name, credential_id, public_key, counter, transports, backed_up, created_at, last_used_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO passkeys (id, user_id, name, credential_id, credential_key, public_key, counter, transports, backed_up, created_at, last_used_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         p.id,
         p.userId,
         p.name,
         p.credentialId,
+        credentialKey(p.credentialId),
         p.publicKey,
         p.counter,
         JSON.stringify(p.transports),
@@ -390,7 +428,11 @@ export function sqliteAuthStore(db: DatabaseSync): AuthStore {
       )
     },
     async findPasskeyByCredentialId(credentialId) {
-      const row = get('SELECT * FROM passkeys WHERE credential_id = ?', credentialId)
+      const row = get(
+        'SELECT * FROM passkeys WHERE credential_key = ? AND credential_id = ?',
+        credentialKey(credentialId),
+        credentialId,
+      )
       return row ? toPasskey(row) : undefined
     },
     async listPasskeys(userId) {
@@ -573,10 +615,9 @@ export function sqliteAuthStore(db: DatabaseSync): AuthStore {
 
 /**
  * A shared {@link CounterStore} on SQLite: several processes on one database file share limits
- * (the stand-in for the framework's `cache` table).
+ * (the stand-in for the framework's `cache` table). `auth_counters` comes from auth's migration.
  */
 export function sqliteCounterStore(db: DatabaseSync, clock: Clock = systemClock): CounterStore {
-  db.exec(SQLITE_SCHEMA)
   const increment = db.prepare(
     `INSERT INTO auth_counters (key, value, expires_at) VALUES (?, 1, ?)
      ON conflict(key) DO UPDATE SET

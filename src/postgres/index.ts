@@ -12,7 +12,6 @@
  */
 
 export {
-  ensurePostgresAuthSchema,
   type FrameworkDatabaseLike,
   frameworkDatabaseClient,
   type PGliteLike,
@@ -24,7 +23,6 @@ export {
   postgresAuthStore,
   postgresCounterStore,
 } from '../engine/store/postgres.ts'
-export { POSTGRES_AUTH_STATEMENTS } from '../engine/store/postgres-schema.ts'
 export {
   type Queryable,
   type TenancyAuditOptions,

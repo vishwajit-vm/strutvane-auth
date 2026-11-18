@@ -2,6 +2,7 @@
 import { PGlite } from '@electric-sql/pglite'
 import { describe, expect, it } from 'vitest'
 import {
+import { authSchema } from './support/auth-schema.ts'
   compileRoleMap,
   createPermissionProvider,
   definePolicy,
@@ -137,13 +138,15 @@ describe('README: the role map', () => {
 })
 
 describe('README: the native identity engine', () => {
-  it('works as documented (PostgreSQL store, the shipped migration, the full engine)', async () => {
+  it('works as documented (PostgreSQL store, the migrated tables, the full engine)', async () => {
     const { createNativeEngine } = await import('../src/index.ts')
-    const { POSTGRES_AUTH_STATEMENTS, pgliteClient, postgresAuthStore, postgresCounterStore } =
-      await import('../src/postgres/index.ts')
+    const { pgliteClient, postgresAuthStore, postgresCounterStore } = await import(
+      '../src/postgres/index.ts'
+    )
     const pg = await PGlite.create()
     try {
-      for (const statement of POSTGRES_AUTH_STATEMENTS) await pg.query(statement)
+      // What `node strut migrate` leaves: the app's users table plus auth's migrations.
+      for (const statement of authSchema('postgres')) await pg.query(statement)
       const db = pgliteClient(pg)
       const mails: string[] = []
       const engine = createNativeEngine({
