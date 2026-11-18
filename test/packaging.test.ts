@@ -20,6 +20,7 @@ interface Manifest {
   readonly devDependencies?: Deps
   readonly peerDependencies?: Deps
   readonly engines?: { readonly node?: string }
+  readonly strutvane?: { readonly compat?: string }
 }
 
 const root = fileURLToPath(new URL('..', import.meta.url))
@@ -49,8 +50,12 @@ describe('packaging: one kernel', () => {
   it('peer-depends on the merged framework and never bundles or pins its own copy', () => {
     expect(pkg.dependencies?.[FRAMEWORK]).toBeUndefined()
     const range = pkg.peerDependencies?.[FRAMEWORK]
-    // CONSISTENCY #128: the interim framework 0.1.0-next.1 or the 0.2 train; never 0.1.0-next.0.
-    expect(range).toBe('^0.1.0-next.1 || ^0.2.0-next.0')
+    // CONSISTENCY #128: the 0.2 core train. 0.2 is the first framework with lowercase error codes
+    // (#123) and the `field` member on validation issues (#69), which this package relies on.
+    expect(range).toBe('^0.2.0-next.0')
+    // The dev copy we test against is the train's version, and the compat range matches the peer.
+    expect(pkg.devDependencies?.[FRAMEWORK]).toBe('0.2.0-next.0')
+    expect(pkg.strutvane?.compat).toBe('^0.2.0-next.0')
   })
 
   it('depends on no other product package', () => {
