@@ -41,7 +41,7 @@ export interface ValidateOptions extends FilterLimits {
    * The only fields an UNTRUSTED filter may reference (e.g. `policy.filterableFields(actor)`).
    * Without it, a client could filter or sort on a field it may not read and learn its value one
    * comparison at a time (`salary gt 50000`, `salary gt 75000`…). Fields outside the list are
-   * rejected with `INVALID_FILTER`, exactly like unknown fields. Relation paths (`customer.region`)
+   * rejected with `invalid_filter`, exactly like unknown fields. Relation paths (`customer.region`)
    * must be listed explicitly. Leave unset only for trusted filters (policy conditions).
    */
   readonly allowedFields?: Iterable<string>

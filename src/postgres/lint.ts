@@ -23,12 +23,13 @@ import { TENANT_SETTING } from './with-tenant.ts'
 /** One finding. */
 export interface SessionSetFinding {
   readonly severity: 'error' | 'warning'
+  /** Stable, lowercase `snake_case` (CONSISTENCY #68; uppercase before 0.2, e.g. `SESSION_SET`). */
   readonly code:
-    | 'SESSION_SET'
-    | 'SESSION_SET_CONFIG'
-    | 'SET_LOCAL'
-    | 'PERSISTENT_SET'
-    | 'SESSION_RESET'
+    | 'session_set'
+    | 'session_set_config'
+    | 'set_local'
+    | 'persistent_set'
+    | 'session_reset'
   /** 1-based line number in the input. */
   readonly line: number
   readonly message: string
@@ -95,7 +96,7 @@ export function findSessionSet(sql: string, setting: string = TENANT_SETTING): S
     if (inAlterStatement(text, m.index)) {
       findings.push({
         severity: 'error',
-        code: 'PERSISTENT_SET',
+        code: 'persistent_set',
         line: lineOf(text, m.index),
         message: `ALTER ROLE/DATABASE … SET ${setting} gives every new session a default tenant; set the tenant per transaction with set_config('${setting}', $1, true).`,
       })
@@ -105,13 +106,13 @@ export function findSessionSet(sql: string, setting: string = TENANT_SETTING): S
       local
         ? {
             severity: 'warning',
-            code: 'SET_LOCAL',
+            code: 'set_local',
             line: lineOf(text, m.index),
             message: `SET LOCAL ${setting} cannot take a bind parameter; use set_config('${setting}', $1, true) instead.`,
           }
         : {
             severity: 'error',
-            code: 'SESSION_SET',
+            code: 'session_set',
             line: lineOf(text, m.index),
             message: `Session-level SET ${setting} leaks the tenant to the next user of a pooled connection; use set_config('${setting}', $1, true) inside a transaction.`,
           },
@@ -122,7 +123,7 @@ export function findSessionSet(sql: string, setting: string = TENANT_SETTING): S
     if (inAlterStatement(text, m.index)) continue // removing a persistent default is the fix
     findings.push({
       severity: 'warning',
-      code: 'SESSION_RESET',
+      code: 'session_reset',
       line: lineOf(text, m.index),
       message: `RESET ${setting} manages the tenant at session level; with set_config('${setting}', $1, true) inside a transaction there is nothing to reset.`,
     })
@@ -136,7 +137,7 @@ export function findSessionSet(sql: string, setting: string = TENANT_SETTING): S
     if (local.toLowerCase() !== 'true') {
       findings.push({
         severity: 'error',
-        code: 'SESSION_SET_CONFIG',
+        code: 'session_set_config',
         line: lineOf(text, m.index),
         message: `set_config('${setting}', …, ${local}) is session-level unless the third argument is the literal true.`,
       })

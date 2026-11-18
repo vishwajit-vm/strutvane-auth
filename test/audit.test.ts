@@ -94,14 +94,14 @@ describe('recordAudit', () => {
       action: 'auth.login.failed',
       actor: null,
       tenantId: TENANT_B,
-      reason: 'INVALID_CREDENTIALS',
+      reason: 'invalid_credentials',
       ip: '203.0.113.9',
       userAgent: 'x'.repeat(2000),
       resource: { type: 'session' },
     })
     expect(event.actor).toBeNull()
     expect(event.tenantId).toBe(TENANT_B)
-    expect(event.reason).toBe('INVALID_CREDENTIALS')
+    expect(event.reason).toBe('invalid_credentials')
     expect(event.resource).toEqual({ type: 'session' })
     expect(event.userAgent).toHaveLength(512)
     expect(event.id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-7/)

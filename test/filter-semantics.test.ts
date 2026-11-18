@@ -215,7 +215,7 @@ describe('validateFilter (the shared gate)', () => {
       expect.unreachable()
     } catch (error) {
       expect(error).toBeInstanceOf(InvalidFilterError)
-      expect((error as InvalidFilterError).code).toBe('INVALID_FILTER')
+      expect((error as InvalidFilterError).code).toBe('invalid_filter')
       expect((error as InvalidFilterError).status).toBe(422)
       expect((error as Error).message).not.toContain('SECRET-VALUE')
     }

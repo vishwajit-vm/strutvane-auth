@@ -69,7 +69,7 @@ describe('authenticateRequest', () => {
     if (out.ok) return
     expect(out.response.status).toBe(403)
     expect(out.response.headers.get('content-type')).toBe('application/problem+json')
-    expect(await out.response.json()).toMatchObject({ code: 'FORBIDDEN', status: 403 })
+    expect(await out.response.json()).toMatchObject({ code: 'forbidden', status: 403 })
   })
 
   it('ignores a spoofed X-Tenant-Id from a user, but lets a trusted tenant-less service use it', async () => {
@@ -96,7 +96,7 @@ describe('authenticateRequest', () => {
     })
     expect(noTenant.ok ? 200 : noTenant.response.status).toBe(400)
     if (!noTenant.ok)
-      expect(await noTenant.response.json()).toMatchObject({ code: 'TENANT_REQUIRED' })
+      expect(await noTenant.response.json()).toMatchObject({ code: 'tenant_required' })
     const plain = await authenticateRequest(new Request('https://x.test/'), { engine })
     expect(plain.ok && plain.state.tenant).toBeUndefined()
   })

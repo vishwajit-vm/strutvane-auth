@@ -133,7 +133,7 @@ export async function loadPolicies(root: string): Promise<Policy[]> {
   return out
 }
 
-const tooLarge = () => new StrutvaneError('PAYLOAD_TOO_LARGE', { status: 413 })
+const tooLarge = () => new StrutvaneError('payload_too_large', { status: 413 })
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const MEMBERS = /^\/tenants\/([^/]+)\/members(?:\/([^/]+))?$/
 /** v1 tenant roles of the deprecated Better Auth adapter (its creator role is `owner`). */
@@ -180,7 +180,7 @@ async function readBody(request: Request): Promise<string> {
   try {
     return new TextDecoder('utf-8', { fatal: true }).decode(bytes)
   } catch {
-    throw new StrutvaneError('MALFORMED_REQUEST', { status: 400 })
+    throw new StrutvaneError('malformed_request', { status: 400 })
   }
 }
 
@@ -192,7 +192,7 @@ async function readBody(request: Request): Promise<string> {
 async function readJson(request: Request): Promise<Record<string, unknown>> {
   const type = (request.headers.get('content-type') ?? '').split(';')[0]?.trim().toLowerCase()
   if (type !== 'application/json')
-    throw new StrutvaneError('UNSUPPORTED_MEDIA_TYPE', { status: 415 })
+    throw new StrutvaneError('unsupported_media_type', { status: 415 })
   const text = await readBody(request)
   try {
     const value: unknown = JSON.parse(text)
@@ -201,7 +201,7 @@ async function readJson(request: Request): Promise<Record<string, unknown>> {
   } catch {
     // fall through
   }
-  throw new StrutvaneError('MALFORMED_REQUEST', { status: 400 })
+  throw new StrutvaneError('malformed_request', { status: 400 })
 }
 
 const originOf = (url: string): string | undefined => {
@@ -219,11 +219,11 @@ const originOf = (url: string): string | undefined => {
  */
 function assertSameSite(request: Request, trusted: ReadonlySet<string>): void {
   if (request.headers.get('sec-fetch-site')?.toLowerCase() === 'cross-site')
-    throw new StrutvaneError('FORBIDDEN', { status: 403 })
+    throw new StrutvaneError('forbidden', { status: 403 })
   const origin = request.headers.get('origin')
   if (origin === null) return
   if (origin === originOf(request.url) || trusted.has(origin)) return
-  throw new StrutvaneError('FORBIDDEN', { status: 403 })
+  throw new StrutvaneError('forbidden', { status: 403 })
 }
 
 const json = (body: unknown, status: number, headers: Headers): Response => {
@@ -273,8 +273,8 @@ async function handleMembers(
   const auth = await deps.engine.authenticate(request)
   const actor = auth.actor
   if (!actor) return problemResponse(new UnauthenticatedError(), auth.headers)
-  const forbidden = () => problemResponse(new StrutvaneError('FORBIDDEN', { status: 403 }))
-  const invalid = () => problemResponse(new StrutvaneError('VALIDATION_FAILED', { status: 422 }))
+  const forbidden = () => problemResponse(new StrutvaneError('forbidden', { status: 403 }))
+  const invalid = () => problemResponse(new StrutvaneError('validation_failed', { status: 422 }))
   if (
     !UUID.test(tenantId) ||
     actor.tenantId?.toLowerCase() !== tenantId.toLowerCase() ||
@@ -311,14 +311,14 @@ async function handleMembers(
   }
   if (method === 'DELETE' && userId !== undefined) {
     const target = roster.find((m) => m.userId.toLowerCase() === userId.toLowerCase())
-    if (!target) return problemResponse(new StrutvaneError('NOT_FOUND', { status: 404 }))
+    if (!target) return problemResponse(new StrutvaneError('not_found', { status: 404 }))
     const owners = roster.filter((m) => m.roles.includes(deps.ownerRole))
     if (target.roles.includes(deps.ownerRole) && owners.length <= 1) return invalid()
     const removed = await deps.engine.removeMemberAsSystem({ tenantId, userId: target.userId })
     if (!removed.ok) return toResponse({ ...removed, ok: false })
     return new Response(null, { status: 204, headers: auth.headers })
   }
-  return problemResponse(new StrutvaneError('NOT_FOUND', { status: 404 }))
+  return problemResponse(new StrutvaneError('not_found', { status: 404 }))
 }
 
 /** Create the auth provider (a factory so every app and test gets fresh state). */
@@ -545,12 +545,12 @@ export function createAuthProvider(): Provider {
               // Without tenancy the tenant endpoints do not exist: otherwise any signed-in user
               // could create a tenant and act as its `owner` in an app that never scopes by tenant.
               if (tenancy?.enabled !== true && TENANT_ROUTES.has(route))
-                return answer(problemResponse(new StrutvaneError('NOT_FOUND', { status: 404 })))
+                return answer(problemResponse(new StrutvaneError('not_found', { status: 404 })))
               switch (route) {
                 case 'POST /sign-up': {
                   // Deny by default: only an explicit `registration: true` opens public sign-up.
                   if (cfg.registration !== true && cfg.features?.registration !== true)
-                    return answer(problemResponse(new StrutvaneError('FORBIDDEN', { status: 403 })))
+                    return answer(problemResponse(new StrutvaneError('forbidden', { status: 403 })))
                   const body = await readJson(p.request)
                   const input = {
                     email: text(body['email']),
@@ -603,7 +603,7 @@ export function createAuthProvider(): Provider {
                   // anything else is the engine's plain 404.
                   if (engineRoutes)
                     return answer(await engineRoutes(p.request, url.pathname.slice(base.length)))
-                  return answer(problemResponse(new StrutvaneError('NOT_FOUND', { status: 404 })))
+                  return answer(problemResponse(new StrutvaneError('not_found', { status: 404 })))
               }
             } catch (error) {
               if (error instanceof StrutvaneError) return answer(problemResponse(error))

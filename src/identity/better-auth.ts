@@ -220,7 +220,7 @@ function build(options: BetterAuthEngineOptions, report: ErrorReporter) {
       },
     },
     // Unexpected errors are thrown out of the handler instead of printed with console.error (which
-    // bypasses the logger and redaction); `guarded()` reports them once and returns INTERNAL_ERROR.
+    // bypasses the logger and redaction); `guarded()` reports them once and returns `internal_error`.
     onAPIError: { throw: true },
     plugins: [organization({ allowUserToCreateOrganization: true, creatorRole: 'owner' })],
   })
@@ -623,7 +623,7 @@ export function createBetterAuthEngine(options: BetterAuthEngineOptions): Better
           organizationId: input.tenantId,
         })
         if (res.status !== 200) {
-          // Any refusal (not a member, unknown tenant) is FORBIDDEN, so tenants cannot be probed.
+          // Any refusal (not a member, unknown tenant) is `forbidden`, so tenants cannot be probed.
           const failure = toFailure<{ actor: Actor }>(res)
           return !failure.ok && failure.error.code === 'internal_error'
             ? failure

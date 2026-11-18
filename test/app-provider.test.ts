@@ -174,7 +174,7 @@ describe('@strutvane/auth/provider', () => {
       body: JSON.stringify({ email: 'x@app.test', password: 'a-long-enough-password', name: 'X' }),
     })
     expect(refused.response?.status).toBe(403)
-    expect(await refused.response?.json()).toMatchObject({ code: 'FORBIDDEN', status: 403 })
+    expect(await refused.response?.json()).toMatchObject({ code: 'forbidden', status: 403 })
   })
 
   test('without tenancy the tenant endpoints do not exist (no self-assigned tenant roles)', async () => {

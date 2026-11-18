@@ -129,7 +129,7 @@ describe('isolation through a real pg.Pool', () => {
       findSessionSet(`${badSql};\nSELECT set_config('app.tenant_id', $1, false)`).map(
         (f) => f.code,
       ),
-    ).toEqual(['SESSION_SET', 'SESSION_SET_CONFIG'])
+    ).toEqual(['session_set', 'session_set_config'])
   })
 
   it('a backend killed mid-transaction rejects, is destroyed (not re-pooled) and never crashes the process', async () => {
@@ -158,19 +158,19 @@ describe('isolation through a real pg.Pool', () => {
 describe('bypasses ADR-0007 rule 4 forbids (and the audit flags)', () => {
   it('a superuser always bypasses RLS, even with FORCE; the audit reports it', async () => {
     expect(await count(db.admin)).toBe(PER_TENANT * 2)
-    expect((await tenancyAudit(db.admin)).map((f) => f.code)).toContain('RUNTIME_ROLE_BYPASSES_RLS')
+    expect((await tenancyAudit(db.admin)).map((f) => f.code)).toContain('runtime_role_bypasses_rls')
   })
 
   it('a BYPASSRLS role sees every tenant; the audit reports it', async () => {
     const pool = track(fx.pool(fx.bypass, 1))
     expect(await count(pool)).toBe(PER_TENANT * 2)
-    expect((await tenancyAudit(pool)).map((f) => f.code)).toContain('RUNTIME_ROLE_BYPASSES_RLS')
+    expect((await tenancyAudit(pool)).map((f) => f.code)).toContain('runtime_role_bypasses_rls')
   })
 
   it('FORCE locks out the owner, but the owner can switch it off: never run the app as the owner', async () => {
     const pool = track(fx.pool(fx.owner, 1))
     expect(await count(pool)).toBe(0)
-    expect((await tenancyAudit(pool)).map((f) => f.code)).toContain('RUNTIME_ROLE_OWNS_TABLE')
+    expect((await tenancyAudit(pool)).map((f) => f.code)).toContain('runtime_role_owns_table')
     const client = await pool.connect()
     try {
       await client.query('BEGIN')
@@ -195,8 +195,8 @@ describe('bypasses ADR-0007 rule 4 forbids (and the audit flags)', () => {
       )
       expect(Number((await pool.query('SELECT count(*) AS n FROM public.safe')).rows[0]?.n)).toBe(0)
       const findings = (await tenancyAudit(pool)).map((f) => `${f.code}:${f.object}`)
-      expect(findings).toContain('DEFINER_VIEW:public.leak')
-      expect(findings).not.toContain('DEFINER_VIEW:public.safe')
+      expect(findings).toContain('definer_view:public.leak')
+      expect(findings).not.toContain('definer_view:public.safe')
     } finally {
       await db.admin.query('DROP VIEW public.leak, public.safe')
     }

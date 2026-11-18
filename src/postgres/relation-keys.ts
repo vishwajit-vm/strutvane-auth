@@ -13,7 +13,8 @@ import type { Queryable } from './audit-query.ts'
 /** One relation whose target key is not provably unique. */
 export interface RelationKeyFinding {
   readonly severity: 'error'
-  readonly code: 'RELATION_TABLE_MISSING' | 'RELATION_KEY_NOT_UNIQUE'
+  /** Stable, lowercase `snake_case` (CONSISTENCY #68; uppercase before 0.2). */
+  readonly code: 'relation_table_missing' | 'relation_key_not_unique'
   /** `table.column` of the target key. */
   readonly object: string
   readonly message: string
@@ -45,14 +46,14 @@ export async function relationKeyAudit(
       if (!row?.found) {
         findings.push({
           severity: 'error',
-          code: 'RELATION_TABLE_MISSING',
+          code: 'relation_table_missing',
           object,
           message: `Relation table ${rel.table} does not exist (or is not visible to this role).`,
         })
       } else if (!row.unique) {
         findings.push({
           severity: 'error',
-          code: 'RELATION_KEY_NOT_UNIQUE',
+          code: 'relation_key_not_unique',
           object,
           message: `${object} has no single-column unique index; policy filters reading this relation can fail with "more than one row returned by a subquery". Make it the primary key or add a UNIQUE constraint.`,
         })

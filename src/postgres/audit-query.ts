@@ -21,15 +21,16 @@ export interface Queryable {
 /** One problem found by {@link tenancyAudit}. */
 export interface TenancyFinding {
   readonly severity: 'error' | 'warning'
+  /** Stable, lowercase `snake_case` (CONSISTENCY #68; uppercase before 0.2, e.g. `RLS_DISABLED`). */
   readonly code:
-    | 'RLS_DISABLED'
-    | 'RLS_NOT_FORCED'
-    | 'NO_RESTRICTIVE_POLICY'
-    | 'RUNTIME_ROLE_BYPASSES_RLS'
-    | 'RUNTIME_ROLE_OWNS_TABLE'
-    | 'DEFINER_VIEW'
-    | 'SECURITY_DEFINER_FUNCTION'
-    | 'TENANT_SETTING_DEFAULT'
+    | 'rls_disabled'
+    | 'rls_not_forced'
+    | 'no_restrictive_policy'
+    | 'runtime_role_bypasses_rls'
+    | 'runtime_role_owns_table'
+    | 'definer_view'
+    | 'security_definer_function'
+    | 'tenant_setting_default'
   /** `schema.name` of the object, when the finding is about one. */
   readonly object?: string
   readonly message: string
@@ -127,7 +128,7 @@ export async function tenancyAudit(
   if (role && (role.super || role.bypass)) {
     findings.push({
       severity: 'error',
-      code: 'RUNTIME_ROLE_BYPASSES_RLS',
+      code: 'runtime_role_bypasses_rls',
       object: role.role,
       message: `Role "${role.role}" is ${role.super ? 'a superuser' : 'BYPASSRLS'}: row-level security never applies to it. Connect the app as a dedicated runtime role.`,
     })
@@ -141,7 +142,7 @@ export async function tenancyAudit(
     for (const r of assumable) {
       findings.push({
         severity: 'error',
-        code: 'RUNTIME_ROLE_BYPASSES_RLS',
+        code: 'runtime_role_bypasses_rls',
         object: role.role,
         message: `Role "${role.role}" is a member of "${r.role}", which is ${r.super ? 'a superuser' : 'BYPASSRLS'}; it can SET ROLE and bypass row-level security. Revoke the membership.`,
       })
@@ -154,7 +155,7 @@ export async function tenancyAudit(
   }[]) {
     findings.push({
       severity: 'error',
-      code: 'TENANT_SETTING_DEFAULT',
+      code: 'tenant_setting_default',
       object: d.role,
       message: `A default for ${setting} is configured (role ${d.role}, database ${d.db}): every new session would start inside a tenant. Remove it (ALTER ROLE … RESET ${setting}); set the tenant per transaction only.`,
     })
@@ -171,14 +172,14 @@ export async function tenancyAudit(
     if (!t.enabled) {
       findings.push({
         severity: 'error',
-        code: 'RLS_DISABLED',
+        code: 'rls_disabled',
         object: t.object,
         message: `Row-level security is not enabled on ${t.object}.`,
       })
     } else if (!t.forced) {
       findings.push({
         severity: 'error',
-        code: 'RLS_NOT_FORCED',
+        code: 'rls_not_forced',
         object: t.object,
         message: `Row-level security is not FORCED on ${t.object}, so it does not apply to the table owner.`,
       })
@@ -186,7 +187,7 @@ export async function tenancyAudit(
     if (!t.restrictive) {
       findings.push({
         severity: 'error',
-        code: 'NO_RESTRICTIVE_POLICY',
+        code: 'no_restrictive_policy',
         object: t.object,
         message: `${t.object} has no RESTRICTIVE FOR ALL tenant policy that applies to every role and checks ${column} against current_setting('${setting}') in both USING and WITH CHECK; a permissive policy can expose every tenant.`,
       })
@@ -194,7 +195,7 @@ export async function tenancyAudit(
     if (t.owned) {
       findings.push({
         severity: 'error',
-        code: 'RUNTIME_ROLE_OWNS_TABLE',
+        code: 'runtime_role_owns_table',
         object: t.object,
         message: `The current role owns ${t.object} (directly or through role membership); owners can disable FORCE ROW LEVEL SECURITY. Use a separate owner role for migrations.`,
       })
@@ -204,7 +205,7 @@ export async function tenancyAudit(
   for (const v of (await db.query(VIEWS, [column])).rows as { object: string; kind: string }[]) {
     findings.push({
       severity: 'error',
-      code: 'DEFINER_VIEW',
+      code: 'definer_view',
       object: v.object,
       message:
         v.kind === 'm'
@@ -216,7 +217,7 @@ export async function tenancyAudit(
   for (const f of (await db.query(FUNCTIONS)).rows as { object: string }[]) {
     findings.push({
       severity: 'warning',
-      code: 'SECURITY_DEFINER_FUNCTION',
+      code: 'security_definer_function',
       object: f.object,
       message: `Function ${f.object} is SECURITY DEFINER; it must not read tenant tables (it would run with its owner's rights).`,
     })

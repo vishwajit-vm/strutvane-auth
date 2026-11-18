@@ -210,7 +210,7 @@ describe('Better Auth specifics', () => {
     expect(row.rows[0]?.ip).not.toBe('6.6.6.6')
   })
 
-  test('a database outage becomes INTERNAL_ERROR / anonymous, is reported, and never hits stderr', async () => {
+  test('a database outage becomes internal_error / anonymous, is reported, and never hits stderr', async () => {
     const outage = await createDatabase()
     const contexts: string[] = []
     const fragile = createBetterAuthEngine({

@@ -123,7 +123,7 @@ export function runIdentityContract(label: string, factory: EngineFactory): void
         expect(auth.headers).toBeInstanceOf(Headers)
       })
 
-      test('rejects weak passwords and malformed emails with VALIDATION_FAILED', async () => {
+      test('rejects weak passwords and malformed emails with validation_failed', async () => {
         const weak = await engine.signUp(
           { email: testEmail('weak'), password: 'short', name: 'W' },
           req(),
@@ -148,7 +148,7 @@ export function runIdentityContract(label: string, factory: EngineFactory): void
         }
       })
 
-      test('a duplicate email (any case) returns EMAIL_UNAVAILABLE', async () => {
+      test('a duplicate email (any case) returns email_unavailable', async () => {
         const { address } = await signedUpUser('dup')
         const again = await engine.signUp(
           { email: address.toUpperCase(), password: TEST_PASSWORD, name: 'Dup' },
@@ -340,7 +340,7 @@ export function runIdentityContract(label: string, factory: EngineFactory): void
         expect(await mailbox.waitForToken(address)).toBeTruthy()
       })
 
-      test('a bad token is INVALID_TOKEN; a good one changes the password, is single-use and revokes sessions', async () => {
+      test('a bad token is invalid_token; a good one changes the password, is single-use and revokes sessions', async () => {
         const { address, jar } = await signedUpUser('reset-flow')
         await engine.startPasswordReset({ email: address }, req())
         const token = await mailbox.waitForToken(address)

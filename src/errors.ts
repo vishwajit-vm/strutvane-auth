@@ -13,16 +13,32 @@
  */
 import { type ErrorDefinition, StrutvaneError } from '@strutvane/framework/core'
 
-/** Error codes owned by `@strutvane/auth`. Register them with core's error registry at boot. */
+/**
+ * Error codes `@strutvane/auth` can answer with that the framework's built-in list does not have.
+ * The app provider registers each one at boot unless something registered it first, so every
+ * problem auth returns renders with a proper title instead of a humanized code.
+ *
+ * Codes are lowercase `snake_case` (CONSISTENCY #68, #123): `test/error-codes-source.test.ts`
+ * fails on an uppercase code anywhere in `src`. `tenant_required`, `malformed_request` and
+ * `unsupported_media_type` are also registered by the framework's HTTP kernel; whichever registers
+ * first wins, and the error instance sets the status either way.
+ *
+ * @example
+ * for (const definition of AUTH_ERRORS)
+ *   if (!registry.get(definition.code)) registry.register(definition)
+ */
 export const AUTH_ERRORS: readonly ErrorDefinition[] = Object.freeze(
   (
     [
-      ['INVALID_FILTER', 422, 'Invalid filter'],
-      ['INVALID_CREDENTIALS', 401, 'Invalid email or password'],
-      ['EMAIL_UNAVAILABLE', 422, 'This email cannot be used'],
-      ['INVALID_TOKEN', 400, 'Invalid or expired link'],
-      ['TENANT_REQUIRED', 400, 'No tenant could be determined for this request'],
-      ['UNSUPPORTED_MEDIA_TYPE', 415, 'Unsupported media type'],
+      ['invalid_filter', 422, 'Invalid filter'],
+      ['invalid_credentials', 401, 'Invalid email or password'],
+      ['email_unavailable', 422, 'This email cannot be used'],
+      ['invalid_token', 400, 'Invalid or expired link'],
+      ['two_factor_required', 401, 'Two-factor authentication required'],
+      ['email_not_verified', 403, 'Email address not verified'],
+      ['tenant_required', 400, 'No tenant could be determined for this request'],
+      ['malformed_request', 400, 'Malformed request'],
+      ['unsupported_media_type', 415, 'Unsupported media type'],
     ] as const
   ).map(([code, status, title]) =>
     Object.freeze({ code, status, title, owner: '@strutvane/auth' }),
@@ -38,9 +54,9 @@ export class InvalidFilterError extends StrutvaneError {
   /** Developer-facing explanation. Safe to log; it never contains filter VALUES. */
   readonly reason: string
   constructor(reason: string) {
-    super('INVALID_FILTER', { status: 422 })
+    super('invalid_filter', { status: 422 })
     this.reason = reason
-    this.message = `INVALID_FILTER: ${reason}`
+    this.message = `invalid_filter: ${reason}`
   }
 }
 

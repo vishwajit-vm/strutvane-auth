@@ -41,7 +41,7 @@ export interface AuthMiddlewareOptions {
   readonly tenancy?: {
     /** Tried in order; the first valid UUID wins. */
     readonly resolvers: readonly TenantResolver[]
-    /** Refuse requests without a tenant with 400 `TENANT_REQUIRED`. Default `false`. */
+    /** Refuse requests without a tenant with 400 `tenant_required`. Default `false`. */
     readonly required?: boolean
     /** Reported in the `TenantContext`. Default `shared`. */
     readonly strategy?: TenantStrategy
@@ -136,7 +136,7 @@ export async function authenticateRequest(
     if (!tenant && options.tenancy.required) {
       return {
         ok: false,
-        response: problemResponse(new StrutvaneError('TENANT_REQUIRED', { status: 400 }), headers),
+        response: problemResponse(new StrutvaneError('tenant_required', { status: 400 }), headers),
       }
     }
   }

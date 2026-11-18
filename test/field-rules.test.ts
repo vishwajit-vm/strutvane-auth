@@ -90,7 +90,7 @@ describe('resource.beforeWrite: field write rules', () => {
     await expect(write(['member'], { title: 'ok' })).resolves.toBeDefined()
     // Handing a record to another owner is privilege escalation for a non-admin.
     await expect(write(['member'], { title: 'x', ownerId: 'u2' })).rejects.toMatchObject({
-      cause: { code: 'FORBIDDEN', status: 403 },
+      cause: { code: 'forbidden', status: 403 },
     })
     await expect(write(['viewer'], { ownerId: 'u1' })).rejects.toMatchObject({
       cause: { status: 403 },

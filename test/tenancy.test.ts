@@ -323,14 +323,14 @@ describe('tenancyAudit', () => {
     const codes = (await tenancyAudit(db)).map((f) => `${f.severity}:${f.code}:${f.object}`)
     expect(codes).toEqual(
       expect.arrayContaining([
-        'error:RLS_DISABLED:public.open_t',
-        'error:NO_RESTRICTIVE_POLICY:public.open_t',
-        'error:RLS_NOT_FORCED:public.unforced',
-        'error:NO_RESTRICTIVE_POLICY:public.unforced',
-        'error:NO_RESTRICTIVE_POLICY:public.select_only',
-        'error:DEFINER_VIEW:public.leaky',
-        'error:DEFINER_VIEW:public.snap',
-        'warning:SECURITY_DEFINER_FUNCTION:public.definer',
+        'error:rls_disabled:public.open_t',
+        'error:no_restrictive_policy:public.open_t',
+        'error:rls_not_forced:public.unforced',
+        'error:no_restrictive_policy:public.unforced',
+        'error:no_restrictive_policy:public.select_only',
+        'error:definer_view:public.leaky',
+        'error:definer_view:public.snap',
+        'warning:security_definer_function:public.definer',
       ]),
     )
     expect(codes.some((c) => c.includes('public.safe'))).toBe(false)
@@ -338,14 +338,14 @@ describe('tenancyAudit', () => {
 
     // The superuser bypasses RLS; the audit says so. Owning a table is flagged too.
     const asRoot = await asSuper(() => tenancyAudit(db))
-    expect(asRoot.map((f) => f.code)).toContain('RUNTIME_ROLE_BYPASSES_RLS')
+    expect(asRoot.map((f) => f.code)).toContain('runtime_role_bypasses_rls')
     await db.exec('RESET ROLE')
     await db.exec('SET ROLE app_owner')
     const asOwner = await tenancyAudit(db)
     await db.exec('RESET ROLE')
     await db.exec('SET ROLE app_user')
     expect(asOwner.map((f) => `${f.code}:${f.object}`)).toContain(
-      'RUNTIME_ROLE_OWNS_TABLE:app.invoices',
+      'runtime_role_owns_table:app.invoices',
     )
 
     await asSuper(() =>
@@ -367,8 +367,8 @@ describe('tenancyAudit', () => {
     )
     try {
       const codes = (await tenancyAudit(db)).map((f) => `${f.code}:${f.object}`)
-      expect(codes).toContain('RUNTIME_ROLE_OWNS_TABLE:app.invoices')
-      expect(codes).toContain('RUNTIME_ROLE_BYPASSES_RLS:app_user')
+      expect(codes).toContain('runtime_role_owns_table:app.invoices')
+      expect(codes).toContain('runtime_role_bypasses_rls:app_user')
     } finally {
       await asSuper(() => db.exec('REVOKE app_owner, sv_bypass FROM app_user; DROP ROLE sv_bypass'))
     }
@@ -404,13 +404,13 @@ describe('tenancyAudit', () => {
       const codes = (await tenancyAudit(db)).map((f) => `${f.code}:${f.object}`)
       expect(codes).toEqual(
         expect.arrayContaining([
-          'NO_RESTRICTIVE_POLICY:public.restr_true',
-          'NO_RESTRICTIVE_POLICY:public.to_other',
-          'NO_RESTRICTIVE_POLICY:public.weak_check',
+          'no_restrictive_policy:public.restr_true',
+          'no_restrictive_policy:public.to_other',
+          'no_restrictive_policy:public.weak_check',
         ]),
       )
       // USING without WITH CHECK: Postgres applies USING to writes too, so it is protected.
-      expect(codes).not.toContain('NO_RESTRICTIVE_POLICY:public.using_only')
+      expect(codes).not.toContain('no_restrictive_policy:public.using_only')
     } finally {
       await asSuper(() =>
         db.exec(
@@ -425,7 +425,7 @@ describe('tenancyAudit', () => {
     try {
       const findings = await tenancyAudit(db)
       expect(findings.map((f) => `${f.code}:${f.object}`)).toContain(
-        'TENANT_SETTING_DEFAULT:app_user',
+        'tenant_setting_default:app_user',
       )
     } finally {
       await asSuper(() => db.exec('ALTER ROLE app_user RESET app.tenant_id'))
@@ -491,9 +491,9 @@ describe('relationKeyAudit', () => {
         { table: 'x', columns },
       ])
       expect(findings.map((f) => `${f.code}:${f.object}`)).toEqual([
-        'RELATION_KEY_NOT_UNIQUE:public.rk_customers.code',
-        'RELATION_KEY_NOT_UNIQUE:public.rk_dupes.code',
-        'RELATION_TABLE_MISSING:public.rk_missing.id',
+        'relation_key_not_unique:public.rk_customers.code',
+        'relation_key_not_unique:public.rk_dupes.code',
+        'relation_table_missing:public.rk_missing.id',
       ])
       await expect(relationKeyAudit(db, [schema('a; drop', 'id')])).rejects.toThrow(
         PolicyDefinitionError,
@@ -521,11 +521,11 @@ describe('findSessionSet (lint for ADR-0007 rule 3)', () => {
       'SET search_path = app;',
     ].join('\n')
     expect(findSessionSet(sql).map((f) => `${f.line}:${f.severity}:${f.code}`)).toEqual([
-      '2:error:SESSION_SET',
-      '3:error:SESSION_SET',
-      '4:warning:SET_LOCAL',
-      '5:error:SESSION_SET_CONFIG',
-      '6:error:SESSION_SET_CONFIG',
+      '2:error:session_set',
+      '3:error:session_set',
+      '4:warning:set_local',
+      '5:error:session_set_config',
+      '6:error:session_set_config',
     ])
   })
 
@@ -542,13 +542,13 @@ describe('findSessionSet (lint for ADR-0007 rule 3)', () => {
       'SET app.tenant_idx = 1;',
     ].join('\n')
     expect(findSessionSet(sql).map((f) => `${f.line}:${f.severity}:${f.code}`)).toEqual([
-      '1:error:PERSISTENT_SET',
-      '2:error:PERSISTENT_SET',
-      '3:error:SESSION_SET',
-      '4:error:SESSION_SET',
-      '5:warning:SESSION_RESET',
-      '7:warning:SET_LOCAL',
-      '8:error:PERSISTENT_SET',
+      '1:error:persistent_set',
+      '2:error:persistent_set',
+      '3:error:session_set',
+      '4:error:session_set',
+      '5:warning:session_reset',
+      '7:warning:set_local',
+      '8:error:persistent_set',
     ])
   })
 
