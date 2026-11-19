@@ -15,7 +15,7 @@ import {
 } from '../../src/engine/store/postgres.ts'
 import { Browser, harness, PASSWORD, rejectsWith, START } from '../engine/helpers/harness.ts'
 import { authSchema } from '../support/auth-schema.ts'
-import { createDatabase, type TestDatabase } from './helpers.ts'
+import { createDatabase, ignoreForcedDrop, type TestDatabase } from './helpers.ts'
 
 let db: TestDatabase
 let client: PostgresClient
@@ -38,6 +38,7 @@ const user = (id: string): UserRecord => ({
 /** A second, independent pool on the same database: another app instance. */
 function instance(): AuthStore {
   const pool = new pg.Pool({ connectionString: db.url(), max: 4 })
+  pool.on('error', ignoreForcedDrop)
   pools.push(pool)
   return postgresAuthStore(pgPoolClient(pool))
 }

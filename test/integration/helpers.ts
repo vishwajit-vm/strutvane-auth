@@ -8,6 +8,17 @@ export const TENANT_A = '0190f2a0-0000-7000-8000-0000000000a1'
 export const TENANT_B = '0190f2a0-0000-7000-8000-0000000000b1'
 export const PER_TENANT = 5
 
+/**
+ * Every test file ends with `DROP DATABASE … WITH (FORCE)`, which terminates the idle pooled
+ * connections still open on it (SQLSTATE 57P01). A pg.Pool without an `error` listener turns
+ * that expected termination into an unhandled error that fails the run, so test pools ignore
+ * exactly that code; any other error is re-thrown and still fails loudly.
+ */
+export function ignoreForcedDrop(error: Error & { code?: string }): void {
+  if (error.code === '57P01') return
+  throw error
+}
+
 export interface TestDatabase {
   readonly name: string
   readonly url: (user?: string, password?: string) => string
@@ -33,6 +44,7 @@ export async function createDatabase(): Promise<TestDatabase> {
     return u.toString()
   }
   const admin = new pg.Pool({ connectionString: url(), max: 4 })
+  admin.on('error', ignoreForcedDrop)
   return {
     name,
     url,
@@ -96,8 +108,11 @@ export async function tenancyFixture(db: TestDatabase): Promise<TenancyFixture> 
       ])
     }
   }
-  const pool = (role: string, max = 8) =>
-    new pg.Pool({ connectionString: db.url(role, password), max })
+  const pool = (role: string, max = 8) => {
+    const created = new pg.Pool({ connectionString: db.url(role, password), max })
+    created.on('error', ignoreForcedDrop)
+    return created
+  }
   return { owner, runtime, bypass, password, pool }
 }
 
