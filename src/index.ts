@@ -165,12 +165,6 @@ export {
   type RateLimitStore,
 } from './identity/rate-limit.ts'
 export {
-  AUTH_MIGRATIONS,
-  authMigrationsDirectory,
-  type CopiedMigrations,
-  copyAuthMigrations,
-} from './migrations.ts'
-export {
   type AuthMiddlewareOptions,
   type AuthOutcome,
   type AuthState,
@@ -178,6 +172,12 @@ export {
   problemResponse,
   runWithAuth,
 } from './middleware/core.ts'
+export {
+  AUTH_MIGRATIONS,
+  authMigrationsDirectory,
+  type CopiedMigrations,
+  copyAuthMigrations,
+} from './migrations.ts'
 export {
   ActorAttributeError,
   type BindOptions,

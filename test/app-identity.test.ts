@@ -363,7 +363,10 @@ describe('admin API and commands without a persistent store', () => {
         "export default { default: 'postgres', connection: { host: '127.0.0.1', port: 1, user: 'u', database: 'd' } }\n",
     })
     const r = cli(down)
-    expect((await run('tenant:create', cli(down, { name: 'A', slug: 'a', owner: 'a@b.test' }).ctx))?.exitCode).toBe(5)
+    expect(
+      (await run('tenant:create', cli(down, { name: 'A', slug: 'a', owner: 'a@b.test' }).ctx))
+        ?.exitCode,
+    ).toBe(5)
     process.env['SV_AUTH_PW'] = 'long-enough-password'
     expect(
       (
@@ -384,7 +387,7 @@ describe('admin API and commands without a persistent store', () => {
     expect((await run('auth:migration', cli(legacy).ctx))?.exitCode).toBe(3)
   })
 
-  test('auth:migration copies the shipped migrations once and never overwrites the app\'s copy', async () => {
+  test("auth:migration copies the shipped migrations once and never overwrites the app's copy", async () => {
     const root = await project({ 'config/auth.ts': 'export default {}\n' })
     const dir = join(root, 'database', 'migrations')
     const first = cli(root)

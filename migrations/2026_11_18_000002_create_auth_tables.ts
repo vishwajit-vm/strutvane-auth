@@ -1,4 +1,4 @@
-import { migration } from '@strutvane/framework/schema'
+import { type Migration, migration } from '@strutvane/framework/schema'
 
 // @strutvane/auth: its own tables (native engine, ADR-0023), as an ordinary migration that runs
 // on MySQL, MariaDB, PostgreSQL and SQLite. `node strut auth:migration` copies it into
@@ -186,4 +186,4 @@ export default migration({
     ])
       schema.dropIfExists(table)
   },
-})
+}) as Migration

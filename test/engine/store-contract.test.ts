@@ -77,7 +77,7 @@ describe.each(STORES)('store contract (%s)', (_name, make) => {
     expect(await s.advanceTotpStep('abc', 1)).toBe(false)
   })
 
-  it('user times round-trip to the millisecond (stored as the framework\'s timestamps)', async () => {
+  it("user times round-trip to the millisecond (stored as the framework's timestamps)", async () => {
     const s = make()
     const created = await s.createUser({ ...user(UUID_1, 'a@b.io'), emailVerifiedAt: START + 7 })
     const id = created?.id ?? ''

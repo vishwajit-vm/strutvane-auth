@@ -1,4 +1,4 @@
-import { migration } from '@strutvane/framework/schema'
+import { type Migration, migration } from '@strutvane/framework/schema'
 
 // @strutvane/auth: the sign-in columns it needs on your `users` table. The table itself is the
 // app's (the skeleton's 0001_01_01_000000_create_users_table migration owns it; decision #2), so
@@ -31,4 +31,4 @@ export default migration({
       )
     })
   },
-})
+}) as Migration

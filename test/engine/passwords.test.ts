@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest'
 import { sessionCookie } from '../../src/engine/core/sessions.ts'
 import { AUTH_MESSAGES, AuthError } from '../../src/engine/errors.ts'
 import { createScryptHasher, type PasswordHasher } from '../../src/engine/password/hasher.ts'
-import { Browser, FAST_HASHER, harness, PASSWORD, rejectsWith, STORES } from './helpers/harness.ts'
 import { sqliteWithAuthSchema } from '../support/auth-schema.ts'
+import { Browser, FAST_HASHER, harness, PASSWORD, rejectsWith, STORES } from './helpers/harness.ts'
 
 const COOKIE = 'strutvane_session'
 
@@ -200,8 +200,7 @@ describe.each(STORES)('email + password (%s store)', (store) => {
     })
 
     it('rehash-on-login upgrades an old hash to the current parameters', async () => {
-      const db =
-        store === 'sqlite' ? sqliteWithAuthSchema() : undefined
+      const db = store === 'sqlite' ? sqliteWithAuthSchema() : undefined
       const old = harness({ store, ...(db ? { db } : {}) })
       const user = await old.user()
       const stronger = createScryptHasher({ params: { logN: 15, r: 8, p: 1 } })

@@ -78,7 +78,12 @@ async function compileOffline(root: string): Promise<void> {
   for (const file of readdirSync(folder)) copyFileSync(join(folder, file), join(migrations, file))
   const sync = (commands as readonly SyncCommand[]).find((c) => c.name === 'sync')
   const quiet = { line() {}, success() {}, info() {}, warn() {}, error() {} }
-  await sync?.run({ flags: {}, requireProject: () => ({ root }), out: quiet, services: { env: {} } })
+  await sync?.run({
+    flags: {},
+    requireProject: () => ({ root }),
+    out: quiet,
+    services: { env: {} },
+  })
 }
 
 describe('shipped migrations', () => {
@@ -168,10 +173,7 @@ describe('migrate and roll back', () => {
       await runMigrations(connection, replay, { step: true })
       const db = new DatabaseSync(file)
       try {
-        expect(sqliteColumns(db, 'users')).toEqual([
-          ...SKELETON_USER_COLUMNS,
-          ...AUTH_USER_COLUMNS,
-        ])
+        expect(sqliteColumns(db, 'users')).toEqual([...SKELETON_USER_COLUMNS, ...AUTH_USER_COLUMNS])
         expect(await sqliteAuthStore(db).findUserByEmail('nobody@acme.test')).toBeUndefined()
       } finally {
         db.close()

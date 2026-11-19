@@ -3,5 +3,6 @@
   "compilerOptions": {
     "types": ["node"]
   },
-  "include": ["src", "test", "migrations"]
+  "include": ["src", "test", "migrations"],
+  "exclude": ["test/support/skeleton-migrations"]
 }

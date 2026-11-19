@@ -2,7 +2,6 @@
 import { PGlite } from '@electric-sql/pglite'
 import { describe, expect, it } from 'vitest'
 import {
-import { authSchema } from './support/auth-schema.ts'
   compileRoleMap,
   createPermissionProvider,
   definePolicy,
@@ -11,6 +10,7 @@ import { authSchema } from './support/auth-schema.ts'
 import { tenantRlsSql, withTenant } from '../src/postgres/index.ts'
 import { compileToSql } from '../src/sql/index.ts'
 import { actingAs } from '../src/testing/index.ts'
+import { authSchema } from './support/auth-schema.ts'
 
 const ME = '0190f2a0-0000-7000-8000-00000000000a'
 const OTHER = '0190f2a0-0000-7000-8000-00000000000b'

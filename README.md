@@ -147,7 +147,7 @@ A switched-off feature has no routes (the same 404 as an unknown path) and its s
 import { createNativeEngine } from '@strutvane/auth'
 import { pgPoolClient, postgresAuthStore, postgresCounterStore } from '@strutvane/auth/postgres'
 
-const db = pgPoolClient(pool) // a node-postgres Pool; the tables come from the shipped migration
+const db = pgPoolClient(pool) // a node-postgres Pool; the tables come from `node strut migrate`
 const engine = createNativeEngine({
   baseURL: 'https://app.example.com',
   appKey: process.env.APP_KEY, // required with a persistent store
@@ -171,7 +171,12 @@ await engine.auth.twoFactor.enable(req) // the full engine, for your own routes 
 
 The ORM-backed store plugs in at the same port once the framework ORM lands: it implements the 46 store methods over the same tables and passes the same store contract (`test/engine/store-contract.test.ts`).
 
-**Tables** ship as ordinary migrations in the framework's format, `migrations/{postgres,sqlite}/…_create_auth_tables.sql`. `migrate` applies them, and `auth:migration` copies them into your app's `database/migrations`.
+**Tables.** Your app owns its `users` table (the skeleton's `create_users_table` migration: an auto-increment `id`, `name`, `email`, `email_verified_at`, `password`, timestamps). Auth never creates or alters a table at runtime. It ships two ordinary Schema-builder migrations in `migrations/`, which run on MySQL, MariaDB, PostgreSQL and SQLite:
+
+1. `add_auth_columns_to_users_table` adds `two_factor_secret` (ciphertext), `two_factor_confirmed_at`, `two_factor_last_step` and `current_team_id` to `users`;
+2. `create_auth_tables` creates auth's own tables, all `internal` (no generic CRUD API): `user_roles`, `auth_sessions`, `auth_one_time_tokens`, `two_factor_recovery_codes`, `passkeys`, `personal_access_tokens`, `teams`, `team_members`, `team_invitations`, `auth_counters`.
+
+`node strut auth:migration` copies them into `database/migrations` (a file that is already there is never overwritten), `node strut migrate` runs them and `migrate:rollback` undoes them. From code: `copyAuthMigrations(dir)`, `AUTH_MIGRATIONS`, `authMigrationsDirectory()`. User ids are the `users` table's integer key, as decimal strings (`'42'`).
 
 Every engine implements `IdentityEngine`, so the provider, the middleware and the tenancy layer don't care which one runs. `@strutvane/auth/testing` holds the contract suite, which runs against the native engine and the deprecated Better Auth adapter.
 
@@ -193,7 +198,7 @@ Per-IP rate limits need the socket peer address (`attachRequestMeta`, done by th
 
 `create-strutvane` registers `@strutvane/auth/provider` in `strutvane.config.ts`. It connects to the app only through the framework kernel (container tokens, hooks, events), never by importing another product package:
 
-- **Engine and store:** the native engine on the app's database. On PostgreSQL it uses the framework's `Database` (`DatabaseToken`), so there is one pool. On SQLite it uses the same database file. It needs `APP_KEY` and the migrated tables, and boot fails with the fix named when either is missing. Use `session: { driver: 'memory' }` for development and tests. MySQL waits for the framework ORM: until then the identity is kept in memory, with a warning.
+- **Engine and store:** the native engine on the app's database. On PostgreSQL it uses the framework's `Database` (`DatabaseToken`), so there is one pool. On SQLite it uses the same database file. It needs `APP_KEY` and the migrated tables, and boot fails with the fix named when either is missing. Use `session: { driver: 'memory' }` for development and tests. MySQL and MariaDB wait for their store: until then sign-in keeps its sessions in memory, with a warning (the migrations and `createFirstAdmin` already run there). `config/database.ts` may use the skeleton's flat shape (`default: 'pgsql' | 'sqlite' | …`, `database` = the SQLite file).
 - **One cookie-name source (#105):** in `register()` the provider binds `SessionCookieToken` from `config/session.ts` `cookie` (default `strutvane_session`, `__Host-` on https). The engine names its session cookie from that same value, and the framework's CSRF check reads the token. A token bound elsewhere is followed, and a name the engine can't set fails the boot.
 - **Permissions:** loads `app/policies/*.policy.ts` at boot, combines them with the role map of `config/auth.ts` (`roles`, `wildcardExclude`, `newModelDefaults`; see "Roles") and binds `PermissionProviderToken` (deny-by-default). Role names come from the role map's keys (plus `admin`, the role that manages a team) or from `rolePreset` (`admin-member`, `admin-manager-member-viewer`).
 - **Field rules:** `field('amount').readable({ role })` and `.writable({ role })` are enforced on every API record through the framework's `resource.serialize` and `resource.beforeWrite` hooks; filters, sorts and search on unreadable fields are refused through `filterableFields`.
@@ -207,6 +212,25 @@ Per-IP rate limits need the socket peer address (`attachRequestMeta`, done by th
 - **Seed admin:** the `seedAdmin` account is created once at boot, and its role (`seedAdmin.role`, default `admin`) is stored with the account (`user_roles`). Self-registered users get `defaultRoles`.
 - **Mail:** bind a mailer under `AuthMailerToken` (`{ send(mail) }`). Without one, mails are dropped with a warning that names only the mail kind, never the link.
 - **Domain events** on the framework event bus: `auth.user.registered`, `auth.login.succeeded`, `auth.login.failed`, `auth.lockout`, `auth.logout`, `auth.password.changed`, `auth.email.verified`, `auth.two_factor.enabled|disabled`, `auth.passkey.added|removed`, `auth.token.created|revoked`, `auth.session.revoked`, `auth.role.assigned`, `auth.impersonation.started|stopped`, and `tenant.created`, `tenant.switched`, `tenant.invitation.created|accepted`, `tenant.member.changed` (`AUTH_DOMAIN_EVENTS`). Payloads carry ids and enums only, with no IP address. The actor is the user (or the impersonating admin), and `tenant.*` events carry the tenant.
+- **First admin (seeder):** `createFirstAdmin(db, { email, name?, password?, role? })` from `@strutvane/auth` runs on the seeder's own connection (`SeedContext.db`), so it works on every engine. It creates the account once (email verified, role `admin` by default). Without `password` it returns a generated `oneTimePassword` to show once; nothing is logged or written to a file. It refuses, changing nothing, with `FirstAdminError` codes `first_admin_exists` (re-seeding is safe), `email_taken` (an existing account is never promoted), `validation_failed` and `auth_tables_missing`:
+
+  ```ts
+  // database/seeders/admin.seeder.ts
+  import { createFirstAdmin, FirstAdminError } from '@strutvane/auth'
+  import { defineSeeder } from '@strutvane/framework/database'
+
+  export default defineSeeder({
+    async run({ db }) {
+      try {
+        const admin = await createFirstAdmin(db, { email: 'owner@acme.test' })
+        process.stdout.write(`Admin ${admin.email}, one-time password: ${admin.oneTimePassword}\n`)
+      } catch (error) {
+        if (error instanceof FirstAdminError && error.code === 'first_admin_exists') return
+        throw error
+      }
+    },
+  })
+  ```
 - **Scripts and seeders:** `openIdentityAdmin()` from `@strutvane/auth/admin` builds the same engine from the project's `.env` and `config/`, and offers idempotent `ensureUser`, `ensureTenant` and `setMember`:
 
   ```ts
@@ -218,7 +242,7 @@ Per-IP rate limits need the socket peer address (`attachRequestMeta`, done by th
     await idp.close()
   }
   ```
-- **Commands:** `auth:migration`, `auth:user:create --email --name --password-env VAR` (the password comes from that environment variable, never a flag), `tenant:create --name --slug --owner <email>` and `tenant:member:add --tenant <slug> --email --role`.
+- **Commands:** `auth:migration` (copies the migrations), `auth:user:create --email --name --password-env VAR` (the password comes from that environment variable, never a flag), `tenant:create --name --slug --owner <email>` and `tenant:member:add --tenant <slug> --email --role`.
 
 ## Migrating from v1 (Better Auth → native)
 
@@ -227,7 +251,7 @@ Version 0.2 makes the native engine the default ([ADR-0023](https://github.com/v
 To move an app:
 
 1. **Set `APP_KEY`** (`node strut key:generate`). `AUTH_SECRET` and `secret` are no longer used by the native engine.
-2. **Create the tables:** `node strut migrate` applies `create_auth_tables` (or run `node strut auth:migration` to copy it into `database/migrations`). The Better Auth tables (`"user"`, `"session"`, `"organization"`, …) are not touched; the v1 package migration now lives in `migrations-better-auth/`.
+2. **Create the tables:** `node strut auth:migration` copies the two migrations into `database/migrations`, then `node strut migrate` runs them. They need the app's `users` table (the skeleton's migration). The Better Auth tables (`"user"`, `"session"`, `"organization"`, …) are not touched; the v1 package migration now lives in `migrations-better-auth/`.
 3. **Move the accounts.** Password hashes are not carried over automatically (no `LegacyVerifier` for Better Auth's scrypt format ships), so every user sets a new password through `forgot-password`. Create the accounts with `openIdentityAdmin().ensureUser` or `auth:user:create`, and teams with `ensureTenant` / `setMember`.
 4. **Roles:** a tenant's creator is now `admin` (was `owner`). Rename `owner` to `admin` in your role map and policies, or keep both.
 5. **Codes:** every code is lowercase `snake_case`, as in `@strutvane/framework` 0.2 (CONSISTENCY #123). Identity errors: `invalid_credentials`, `validation_failed`, …, and two are new: `two_factor_required` and `email_not_verified`. Problems from the provider and middleware: `forbidden`, `not_found`, `tenant_required`, `malformed_request`, `unsupported_media_type`, `payload_too_large`, and `invalid_filter` for a filter that fails validation (`InvalidFilterError`). Findings from `tenancyAudit`, `findSessionSet` and `relationKeyAudit` too: `rls_disabled`, `rls_not_forced`, `no_restrictive_policy`, `runtime_role_bypasses_rls`, `runtime_role_owns_table`, `definer_view`, `security_definer_function`, `tenant_setting_default`, `session_set`, `session_set_config`, `set_local`, `persistent_set`, `session_reset`, `relation_table_missing`, `relation_key_not_unique`. Update any client or CI script that compares the old uppercase names. Field issues carry `field`, the dotted path (`members.2.email`), next to `path`.

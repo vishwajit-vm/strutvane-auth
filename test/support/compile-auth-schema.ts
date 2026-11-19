@@ -37,7 +37,7 @@ declare module 'vitest' {
 }
 
 /** The folder with the pinned skeleton `users` migration. */
-export const SKELETON_MIGRATIONS = new URL('./skeleton-migrations/', import.meta.url)
+export const SKELETON_MIGRATIONS: URL = new URL('./skeleton-migrations/', import.meta.url)
 
 /**
  * A temporary migrations folder holding the skeleton's users migration and auth's migrations, as
@@ -70,10 +70,7 @@ export async function computeAuthSchema(): Promise<AuthSchema> {
   try {
     const replay = await replayInSandbox(dir, { timeoutMs: 120_000 })
     const sqlite = await statementsOn(new Connection(sqliteDriver(':memory:')), replay)
-    const postgres = await statementsOn(
-      new Connection(pgliteDriver(await PGlite.create())),
-      replay,
-    )
+    const postgres = await statementsOn(new Connection(pgliteDriver(await PGlite.create())), replay)
     return { sqlite, postgres }
   } finally {
     rmSync(dir, { recursive: true, force: true })

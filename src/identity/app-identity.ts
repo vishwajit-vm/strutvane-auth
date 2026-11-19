@@ -362,7 +362,8 @@ async function sqliteIdentity(
         return false
       } catch (error) {
         // node:sqlite reports "no such table" / "no such column" while preparing.
-        if (/no such (?:table|column)/.test(error instanceof Error ? error.message : '')) return true
+        if (/no such (?:table|column)/.test(error instanceof Error ? error.message : ''))
+          return true
         throw error
       }
     }

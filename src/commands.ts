@@ -138,7 +138,8 @@ function copyNativeMigrations(
   const { copied, present } = copyAuthMigrations(dir)
   const rel = (file: string) => relative(root, join(dir, file)).replaceAll('\\', '/')
   for (const file of copied) ctx.out.success(`Created ${rel(file)}`)
-  if (copied.length === 0) ctx.out.success('The auth migrations are already in database/migrations.')
+  if (copied.length === 0)
+    ctx.out.success('The auth migrations are already in database/migrations.')
   else ctx.out.info('Run: node strut migrate')
   return { data: { copied: copied.map(rel), present: present.map(rel) } }
 }

@@ -1,5 +1,28 @@
 # @strutvane/auth
 
+## 0.2.0-next.1
+
+### Minor Changes
+
+- **The app owns its `users` table; auth ships ordinary migrations and never creates or alters a table at runtime (decision #2).** Breaking, pre-1.0 (a minor bump).
+  
+  - New: `migrations/2026_11_18_000001_add_auth_columns_to_users_table.ts` (adds `two_factor_secret`, `two_factor_confirmed_at`, `two_factor_last_step`, `current_team_id` to the skeleton's `users`) and `migrations/2026_11_18_000002_create_auth_tables.ts` (auth's own tables, all `internal`). Both are Schema-builder migrations, so they run on MySQL, MariaDB, PostgreSQL and SQLite and roll back cleanly.
+  - `node strut auth:migration` now copies these files into `database/migrations` (never overwriting a file the app already has) instead of writing SQL; it no longer needs a database. New exports `copyAuthMigrations`, `AUTH_MIGRATIONS`, `authMigrationsDirectory`.
+  - The SQLite and PostgreSQL stores no longer run DDL: `sqliteAuthStore` / `sqliteCounterStore` stop creating tables, and `SQLITE_SCHEMA`, `POSTGRES_AUTH_STATEMENTS` and `ensurePostgresAuthSchema` are removed, as are the v1 SQL files in `migrations/{postgres,sqlite}/`.
+  - The stores read and write the skeleton's columns: user ids are the table's integer key (decimal strings such as `'42'`), and `email_verified_at`, `two_factor_confirmed_at`, `created_at` and `updated_at` are timestamps written like the ORM writes them. A malformed user id is "not found" before it reaches SQL. Email-verification links and system operations accept integer user ids.
+  - The sessions table is now `auth_sessions` (the framework reserves `sessions`). Passkey uniqueness moves to `credential_key` (the credential id's SHA-256), so a 1024-character WebAuthn credential id fits every engine's index limit.
+  - Boot checks the auth columns of `users` too, and `config/database.ts` may use the skeleton's flat shape (`pgsql`, `database` as the SQLite file; the default SQLite file is now `database/database.sqlite`).
+- **`createFirstAdmin()`: the app's first administrator from a seeder, on every engine (decision #13).**
+  
+  `createFirstAdmin(db, { email, name?, password?, role? })` (from `@strutvane/auth`) runs on the seeder's framework connection (`SeedContext.db`), so it works on MySQL, MariaDB, PostgreSQL and SQLite without a running app. It creates the account once (email verified, scrypt hash, role `admin` by default) in one locked transaction. Without `password` it returns a generated 24-character `oneTimePassword` to show once; the password is never logged. It refuses, changing nothing, with `FirstAdminError` and a stable code: `first_admin_exists` (re-seeding is safe), `email_taken` (an existing account is never promoted), `validation_failed`, `auth_tables_missing`.
+- 2d3a47a: **Joins the 0.2 core train on `@strutvane/framework` 0.2 (CONSISTENCY #123, #69, #128).** Breaking, pre-1.0 (a minor bump).
+  
+  - The framework peer is now `^0.2.0-next.0` (was `^0.1.0-next.1 || ^0.2.0-next.0`), and `strutvane.compat` matches it.
+  - Every code is lowercase `snake_case`, like the framework's. Problems from the provider and middleware are `forbidden`, `not_found`, `validation_failed`, `tenant_required`, `malformed_request`, `unsupported_media_type` and `payload_too_large`. `InvalidFilterError` is `invalid_filter`. `AUTH_ERRORS` registers `invalid_filter`, `invalid_credentials`, `email_unavailable`, `invalid_token`, `two_factor_required`, `email_not_verified`, `tenant_required`, `malformed_request` and `unsupported_media_type`, so every problem auth returns renders with a proper title (`two_factor_required`, `email_not_verified` and `malformed_request` used to fall back to a humanized code).
+  - Finding codes are lowercase too: `tenancyAudit` (`rls_disabled`, `rls_not_forced`, `no_restrictive_policy`, `runtime_role_bypasses_rls`, `runtime_role_owns_table`, `definer_view`, `security_definer_function`, `tenant_setting_default`), `findSessionSet` (`session_set`, `session_set_config`, `set_local`, `persistent_set`, `session_reset`) and `relationKeyAudit` (`relation_table_missing`, `relation_key_not_unique`). Update CI scripts that compare the old names.
+  - Field issues keep `{ path, field, code, message }`, and are now checked against the framework's `ValidationIssue` type.
+  - A new source-scan test fails on any uppercase code in `src`.
+
 ## 0.2.0-next.0
 
 ### Minor Changes

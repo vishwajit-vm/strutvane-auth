@@ -101,7 +101,9 @@ function isMissingSchema(error: unknown): boolean {
 /** A timestamp in the format the framework's ORM writes for this engine. */
 function timestampFor(dialect: string, date: Date): string {
   const iso = date.toISOString()
-  return dialect === 'mysql' || dialect === 'mariadb' ? `${iso.slice(0, 10)} ${iso.slice(11, 23)}` : iso
+  return dialect === 'mysql' || dialect === 'mariadb'
+    ? `${iso.slice(0, 10)} ${iso.slice(11, 23)}`
+    : iso
 }
 
 /** A 24-character password from 18 random bytes (144 bits), URL- and shell-safe. */

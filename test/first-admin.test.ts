@@ -19,7 +19,11 @@ import {
 } from '@strutvane/framework/database'
 import { afterAll, describe, expect, it } from 'vitest'
 import { createScryptHasher } from '../src/engine/password/hasher.ts'
-import { pgliteClient, postgresAuthStore, postgresCounterStore } from '../src/engine/store/postgres.ts'
+import {
+  pgliteClient,
+  postgresAuthStore,
+  postgresCounterStore,
+} from '../src/engine/store/postgres.ts'
 import { sqliteAuthStore, sqliteCounterStore } from '../src/engine/store/sqlite.ts'
 import {
   createFirstAdmin,
@@ -66,7 +70,7 @@ async function sqlite(): Promise<Db> {
       createNativeEngine({
         baseURL: URL_,
         appKey: APP_KEY,
-        trustedProxies: TEST_PROXY,
+        trustedProxies: [TEST_PROXY],
         deliverPasswordReset: async () => undefined,
         store: sqliteAuthStore(raw),
         counters: sqliteCounterStore(raw),
@@ -95,7 +99,7 @@ async function postgres(): Promise<Db> {
       createNativeEngine({
         baseURL: URL_,
         appKey: APP_KEY,
-        trustedProxies: TEST_PROXY,
+        trustedProxies: [TEST_PROXY],
         deliverPasswordReset: async () => undefined,
         store: postgresAuthStore(client),
         counters: postgresCounterStore(client),
@@ -201,11 +205,12 @@ describe.each([
     )
     expect(error.message).not.toContain(weak)
     await refused(
-      () => createFirstAdmin(db.connection, { email: 'a@acme.test', password: 'short' }, { hasher }),
+      () =>
+        createFirstAdmin(db.connection, { email: 'a@acme.test', password: 'short' }, { hasher }),
       'validation_failed',
     )
     expect(await db.count('users')).toBe(0)
-    const chosen = 'correct horse battery staple'
+    const chosen = 'an unusual seeding passphrase 7'
     const admin = await createFirstAdmin(
       db.connection,
       { email: 'a@acme.test', password: chosen, role: 'owner' },
@@ -245,7 +250,7 @@ describe.each([
 })
 
 describe('createFirstAdmin: fails closed', () => {
-  it('names the fix when auth\'s migrations have not run (sqlite and postgres)', async () => {
+  it("names the fix when auth's migrations have not run (sqlite and postgres)", async () => {
     // Only the skeleton's users table: the two statements of its migration.
     const file = join(dir, 'bare.sqlite')
     const bare = new DatabaseSync(file)
@@ -288,7 +293,10 @@ describe('createFirstAdmin: fails closed', () => {
 })
 
 /** A connection that renders every statement with a real framework grammar and answers from a script. */
-function recording(grammar: typeof mysqlGrammar, answer: (sql: string) => Record<string, unknown>[]) {
+function recording(
+  grammar: typeof mysqlGrammar,
+  answer: (sql: string) => Record<string, unknown>[],
+) {
   const statements: { sql: string; params: readonly unknown[] }[] = []
   const connection = {
     grammar,
@@ -315,7 +323,7 @@ describe.each([
     )
     const admin = await createFirstAdmin(connection, { email: 'a@acme.test' }, { hasher })
     expect(admin.userId).toBe('41')
-    const select = statements.find((s) => s.sql.includes('FROM `user_roles` WHERE'))
+    const select = statements.find((s) => s.sql.includes('FROM `user_roles` WHERE `role` ='))
     expect(select?.sql).toMatch(/FOR UPDATE$/)
     const insert = statements.find((s) => s.sql.startsWith('INSERT INTO `users`'))
     const [, , hash, verified, created, updated] = insert?.params ?? []
@@ -338,7 +346,7 @@ describe.each([
     )
   })
 
-  it('maps MySQL\'s missing-table error to auth_tables_missing', async () => {
+  it("maps MySQL's missing-table error to auth_tables_missing", async () => {
     const connection = {
       grammar,
       run: async () => {

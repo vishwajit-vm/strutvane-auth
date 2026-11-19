@@ -1,19 +1,23 @@
 /**
- * The app provider with persistent identity (the native engine on PostgreSQL 18): the
- * auth tables come from `sv auth:migration`; accounts, sessions, tenants and memberships survive a
+ * The app provider with persistent identity (the native engine on PostgreSQL 18): the app's
+ * users table comes from its own migration and auth's tables from `node strut auth:migration`
+ * (decision #2), both run by the framework's migrator; accounts, sessions, tenants and memberships survive a
  * restart; the seed admin is created once; seeders and CLI commands write through the admin API;
  * a tenant's owners (and only they) manage its members.
  */
 import { randomBytes } from 'node:crypto'
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Actor } from '@strutvane/framework/contracts'
 import { createApp, HooksToken } from '@strutvane/framework/core'
+import { Connection, pgDriver, replayInSandbox, runMigrations } from '@strutvane/framework/database'
 import { afterAll, beforeAll, describe, expect, test } from 'vitest'
 import { IdentitySetupError, openIdentityAdmin } from '../../src/admin.ts'
 import commands, { type AuthCommandContext } from '../../src/commands.ts'
+import { AUTH_MIGRATIONS } from '../../src/migrations.ts'
 import { createAuthProvider } from '../../src/provider.ts'
+import { SKELETON_MIGRATIONS } from '../support/compile-auth-schema.ts'
 import { createDatabase, type TestDatabase } from './helpers.ts'
 
 const APP = 'http://localhost:3000'
@@ -47,6 +51,10 @@ beforeAll(async () => {
     `export default { default: 'postgres', connection: { url: ${JSON.stringify(db.url())} } }\n`,
   )
   await writeFile(join(root, 'config/auth.ts'), `export default ${JSON.stringify(authConfig)}\n`)
+  // The app's own users migration, as the skeleton ships it.
+  await mkdir(join(root, 'database/migrations'), { recursive: true })
+  for (const file of await readdir(SKELETON_MIGRATIONS))
+    await copyFile(new URL(file, SKELETON_MIGRATIONS), join(root, 'database/migrations', file))
   process.env['SV_TEST_PASSWORD'] = PASSWORD
   process.env['APP_KEY'] = `base64:${randomBytes(32).toString('base64')}`
 })
@@ -78,11 +86,14 @@ const command = (name: string) => {
   return c
 }
 
-async function applyMigrations(): Promise<void> {
-  const dir = join(root, 'database/migrations')
-  for (const file of (await readdir(dir)).sort()) {
-    const sql = await readFile(join(dir, file), 'utf8')
-    for (const statement of sql.split('--> statement-breakpoint')) await db.admin.query(statement)
+/** `node strut migrate`: the framework replays database/migrations and runs what is pending. */
+async function applyMigrations(): Promise<readonly string[]> {
+  const replay = await replayInSandbox(join(root, 'database/migrations'), { timeoutMs: 120_000 })
+  const connection = new Connection(pgDriver({ connectionString: db.url() }))
+  try {
+    return (await runMigrations(connection, replay)).ran
+  } finally {
+    await connection.close()
   }
 }
 
@@ -130,24 +141,19 @@ describe('persistent identity in the app provider', () => {
     await expect(boot()).rejects.toThrow(/auth:migration/)
   })
 
-  test('sv auth:migration writes the tables once; sv migrate applies them', async () => {
+  test('node strut auth:migration copies the migrations once; node strut migrate applies them', async () => {
+    // Only the app's users table exists: boot still refuses (auth's columns and tables are missing).
+    expect(await applyMigrations()).toEqual(['0001_01_01_000000_create_users_table'])
+    await expect(boot()).rejects.toThrow(/auth:migration/)
     const first = cli()
     expect((await command('auth:migration').run(first.ctx))?.exitCode).toBeUndefined()
-    const files = await readdir(join(root, 'database/migrations'))
-    expect(files).toHaveLength(1)
-    expect(files[0]).toMatch(/^\d{14}_auth_identity\.sql$/)
-    const sql = await readFile(join(root, 'database/migrations', files[0] as string), 'utf8')
-    expect(sql).toContain('-- strutvane:migration')
-    expect(sql).toContain('CREATE TABLE IF NOT EXISTS auth_counters')
-    // Written but not applied: a second run does not write a duplicate.
+    const files = (await readdir(join(root, 'database/migrations'))).sort()
+    expect(files).toEqual(['0001_01_01_000000_create_users_table.ts', ...AUTH_MIGRATIONS])
     const again = cli()
     await command('auth:migration').run(again.ctx)
-    expect(again.lines.join('\n')).toMatch(/already written/)
-    expect(await readdir(join(root, 'database/migrations'))).toHaveLength(1)
-    await applyMigrations()
-    const after = cli()
-    await command('auth:migration').run(after.ctx)
-    expect(after.lines.join('\n')).toMatch(/up to date/)
+    expect(again.lines.join('\n')).toMatch(/already in database\/migrations/)
+    expect(await applyMigrations()).toEqual(AUTH_MIGRATIONS.map((f) => f.replace(/\.ts$/, '')))
+    expect(await applyMigrations()).toEqual([])
   })
 
   test('accounts and sessions survive a restart; the seed admin is created once', async () => {
@@ -377,6 +383,34 @@ describe('persistent identity in the app provider', () => {
       await idp.close()
     } finally {
       await rm(memRoot, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('createFirstAdmin on a real PostgreSQL server (decision #13)', () => {
+  test('refuses while an admin exists; under real parallel connections only one run wins', async () => {
+    const { createFirstAdmin, FirstAdminError } = await import('../../src/first-admin.ts')
+    const connection = new Connection(pgDriver({ connectionString: db.url(), max: 4 }))
+    const other = new Connection(pgDriver({ connectionString: db.url(), max: 4 }))
+    try {
+      // The provider's seed admin (role admin) was created at the first boot above.
+      await expect(createFirstAdmin(connection, { email: 'late@app.test' })).rejects.toBeInstanceOf(
+        FirstAdminError,
+      )
+      const results = await Promise.allSettled([
+        createFirstAdmin(connection, { email: 'ops-1@app.test', role: 'ops' }),
+        createFirstAdmin(other, { email: 'ops-2@app.test', role: 'ops' }),
+      ])
+      expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1)
+      const rejected = results.find((r) => r.status === 'rejected')
+      expect(rejected?.status === 'rejected' ? rejected.reason : null).toMatchObject({
+        code: 'first_admin_exists',
+      })
+      const roles = await db.admin.query("SELECT user_id FROM user_roles WHERE role = 'ops'")
+      expect(roles.rows).toHaveLength(1)
+    } finally {
+      await connection.close()
+      await other.close()
     }
   })
 })

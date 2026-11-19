@@ -3,7 +3,6 @@
  * connections genuinely run in parallel. PGlite (the unit suites) runs one statement at a time,
  * so the races of CONSISTENCY #117 can only be shown here.
  */
-import { readFileSync } from 'node:fs'
 import pg from 'pg'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { manualClock } from '../../src/engine/ports/clock.ts'
@@ -15,6 +14,7 @@ import {
   postgresCounterStore,
 } from '../../src/engine/store/postgres.ts'
 import { Browser, harness, PASSWORD, rejectsWith, START } from '../engine/helpers/harness.ts'
+import { authSchema } from '../support/auth-schema.ts'
 import { createDatabase, type TestDatabase } from './helpers.ts'
 
 let db: TestDatabase
@@ -44,18 +44,8 @@ function instance(): AuthStore {
 
 beforeAll(async () => {
   db = await createDatabase()
-  // The shipped migration, exactly as `migrate` would apply it.
-  const text = readFileSync(
-    new URL('../../migrations/postgres/20261116000000_create_auth_tables.sql', import.meta.url),
-    'utf8',
-  )
-  for (const statement of text.split('--> statement-breakpoint'))
-    await db.admin.query(
-      statement
-        .split('\n')
-        .filter((l) => !l.startsWith('-- '))
-        .join('\n'),
-    )
+  // What `node strut migrate` runs: the skeleton's users table, then auth's migrations.
+  for (const statement of authSchema('postgres')) await db.admin.query(statement)
   client = pgPoolClient(db.admin)
   store = postgresAuthStore(client)
 })
@@ -158,8 +148,8 @@ describe('PostgreSQL store on a real server: races (#117)', () => {
 
   it('TOTP steps and passkey counters move once under parallel use (replay and clone detection)', async () => {
     const takers = Array.from({ length: 6 }, () => instance())
-    await store.createUser(user('u-totp'))
-    const steps = await Promise.all(takers.map((s) => s.advanceTotpStep('u-totp', 100)))
+    const totpUser = (await store.createUser(user('u-totp')))?.id ?? ''
+    const steps = await Promise.all(takers.map((s) => s.advanceTotpStep(totpUser, 100)))
     expect(steps.filter(Boolean)).toHaveLength(1)
     await store.addPasskey({
       id: 'pk',
@@ -257,7 +247,7 @@ describe('the engine end to end on a real server', () => {
     stolen.jar.set('strutvane_session', first ?? '')
     expect(await one.auth.state(stolen.req)).toBeNull()
     // Raw session ids never reach the table: only keyed digests.
-    const raw = await pool.query('SELECT id FROM sessions')
+    const raw = await pool.query('SELECT id FROM auth_sessions')
     expect(raw.rows.map((r: { id: string }) => r.id)).not.toContain(b.get('strutvane_session'))
     await rejectsWith(
       () =>

@@ -458,9 +458,9 @@ export function postgresAuthStore(db: PostgresClient): AuthStore {
     async listUserRoles(userId) {
       const key = userKey(userId)
       if (key === undefined) return []
-      return (
-        await all('SELECT role FROM user_roles WHERE user_id = $1 ORDER BY role', [key])
-      ).map((r) => str(r, 'role'))
+      return (await all('SELECT role FROM user_roles WHERE user_id = $1 ORDER BY role', [key])).map(
+        (r) => str(r, 'role'),
+      )
     },
     async setUserRoles(userId, roles) {
       const key = userKey(userId)
