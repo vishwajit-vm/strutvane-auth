@@ -9,7 +9,9 @@
  * - Unknown fields don't exist on `row`: `row.amout` is a compile error.
  * - Values must match the column type: `row.amount.eq('x')` is a compile error.
  * - Ordering and `between` exist only on numeric columns; text operators only on `text` columns.
- * - Actor references carry a phantom type: `row.amount.eq(actor.id)` is a compile error.
+ * - Actor references carry a phantom type: `row.amount.eq(actor.tenantId)` is a compile error.
+ *   `actor.id` compares with text and uuid columns, and with `int4` ones (the integer primary keys
+ *   every generated table has, AUTH-4: `row.ownerId.eq(actor.id)`), never with float8 or bool.
  *
  * ## Safety (run time)
  * The proxies throw a {@link PolicyDefinitionError} for unknown fields, and every condition is
@@ -40,6 +42,19 @@ export type ValueOf<T extends ColumnType> = T extends 'text' | 'uuid'
  */
 export interface TypedActorRef<T> extends ActorRef {
   readonly __type?: T
+}
+
+/**
+ * `actor.id`: a string id that also compares with `int4` columns (integer primary keys, AUTH-4).
+ * At run time it binds to the integer the id spells, or never matches (see `actorIdFor`).
+ */
+export interface ActorIdRef extends TypedActorRef<string> {
+  readonly __actorId?: true
+}
+
+/** Any actor reference other than `actor.id` (`tenantId`, `attrs.*`): never usable as one. */
+export interface ActorValueRef<T> extends TypedActorRef<T> {
+  readonly __actorId?: false
 }
 
 /** A comparison operand: a literal or a compatible actor reference. */
@@ -75,6 +90,17 @@ export interface NumberExpr extends FieldExpr<number> {
   between(from: Arg<number>, to: Arg<number>): QueryFilter
 }
 
+/**
+ * Operators on `int4` columns: those of every number column, and equality with `actor.id` (owner
+ * rules on integer keys, AUTH-4).
+ */
+export interface IntExpr extends NumberExpr {
+  eq(value: Arg<number> | ActorIdRef | null): QueryFilter
+  ne(value: Arg<number> | ActorIdRef | null): QueryFilter
+  in(values: readonly (Arg<number> | ActorIdRef)[]): QueryFilter
+  nin(values: readonly (Arg<number> | ActorIdRef)[]): QueryFilter
+}
+
 /** Operators on text columns. The search text is matched literally (`%` and `_` are not wildcards). */
 export interface TextExpr extends FieldExpr<string> {
   contains(value: string, options?: TextOptions): QueryFilter
@@ -83,11 +109,13 @@ export interface TextExpr extends FieldExpr<string> {
 }
 
 /** The expression interface for a column type. */
-export type ExprFor<T extends ColumnType> = T extends 'int4' | 'float8'
-  ? NumberExpr
-  : T extends 'text'
-    ? TextExpr
-    : FieldExpr<ValueOf<T>>
+export type ExprFor<T extends ColumnType> = T extends 'int4'
+  ? IntExpr
+  : T extends 'float8'
+    ? NumberExpr
+    : T extends 'text'
+      ? TextExpr
+      : FieldExpr<ValueOf<T>>
 
 type ColumnsProxy<C extends Readonly<Record<string, ColumnDef>>> = {
   readonly [K in keyof C]: ExprFor<C[K]['type']>
@@ -105,14 +133,14 @@ export type AttrDecl = Readonly<Record<string, ColumnType>>
 
 /** The `actor` proxy: references only; values are bound per request. */
 export interface ActorProxy<A extends AttrDecl> {
-  readonly id: TypedActorRef<string>
-  readonly tenantId: TypedActorRef<string>
+  readonly id: ActorIdRef
+  readonly tenantId: ActorValueRef<string>
   /**
    * Typed references to the attributes declared in the policy's `attrs` option. Only declared
    * attributes exist, at compile time and at run time, and their values are type-checked per
    * request.
    */
-  readonly attrs: { readonly [K in keyof A]: TypedActorRef<ValueOf<A[K]>> }
+  readonly attrs: { readonly [K in keyof A]: ActorValueRef<ValueOf<A[K]>> }
 }
 
 const toOperand = (value: unknown): FilterOperand => {

@@ -33,10 +33,10 @@ const countrySchema = defineSchema({
   table: 'countries',
   columns: { id: { column: 'id', type: 'uuid' }, name: { column: 'name', type: 'text' } },
 })
-/** An ownerId that cannot hold an actor id. */
+/** An ownerId that cannot hold an actor id (float8: ids are text, uuid or int4). */
 const ticketSchema = defineSchema({
   table: 'tickets',
-  columns: { id: { column: 'id', type: 'uuid' }, ownerId: { column: 'owner_id', type: 'int4' } },
+  columns: { id: { column: 'id', type: 'uuid' }, ownerId: { column: 'owner_id', type: 'float8' } },
 })
 
 const invoicePolicy = definePolicy('invoice', { schema: invoiceSchema }, ({ allow, deny }) => {

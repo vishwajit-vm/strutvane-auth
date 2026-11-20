@@ -284,3 +284,46 @@ describe('engineConfigFrom: config/auth.ts → engine settings', () => {
     })
   })
 })
+
+describe('AUTH-6: in-process test requests have no socket peer', () => {
+  /** Boot in an environment, then sign in once WITHOUT a client address (like app.handle()). */
+  async function signInWithoutPeer(env: string): Promise<string[]> {
+    const root = await mkdtemp(join(tmpdir(), 'sv-auth-peer-'))
+    dirs.push(root)
+    const app = createApp({
+      config: {
+        app: { root, url: 'http://localhost:3000', env },
+        auth: { seedAdmin: { email: 'admin@app.test', password: PASSWORD } },
+      },
+      providers: [createAuthProvider()],
+    })
+    await app.boot()
+    const warnings: string[] = []
+    vi.spyOn(app.make(LoggerToken), 'warn').mockImplementation((message: unknown) => {
+      warnings.push(String(message))
+    })
+    const request = new Request('http://localhost:3000/api/v1/auth/sign-in', {
+      method: 'POST',
+      headers: { origin: 'http://localhost:3000', 'content-type': 'application/json' },
+      body: JSON.stringify({ email: 'admin@app.test', password: PASSWORD }),
+    })
+    const out = (await app
+      .make(HooksToken)
+      .run('http.onRequest', { request, actor: null, tenant: undefined })) as {
+      response?: Response
+    }
+    expect(out.response?.status).toBe(200)
+    await app.shutdown()
+    return warnings
+  }
+
+  test('APP_ENV=testing: counted as loopback, no warning', async () => {
+    const warnings = await signInWithoutPeer('testing')
+    expect(warnings.filter((w) => w.includes('without a client address'))).toEqual([])
+  })
+
+  test('any other environment still warns (a real server must pass the socket peer)', async () => {
+    const warnings = await signInWithoutPeer('production')
+    expect(warnings.some((w) => w.includes('without a client address'))).toBe(true)
+  })
+})

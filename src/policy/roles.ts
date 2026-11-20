@@ -18,9 +18,10 @@
  *   is every action on every resource. It is an **allow** for actors holding the role.
  * - `{ action, own: true }` allows only records whose `ownerId` equals the actor's id. It compiles
  *   to the same filter a policy's `row.ownerId.eq(actor.id)` would, so lists stay filtered in SQL.
- *   It **fails closed**: on a resource whose schema has no text/uuid `ownerId` column (or whose
+ *   It **fails closed**: on a resource whose schema has no text, uuid or int4 `ownerId` column (or whose
  *   schema is unknown, i.e. no policy and no `schemas` entry), it never matches. A null actor id
- *   never matches either (fail-closed binding, ADR-0008).
+ *   never matches either (fail-closed binding, ADR-0008). On an int4 `ownerId` (integer keys, AUTH-4)
+ *   the actor's id must spell a canonical integer, or the grant never matches (`actorIdFor`).
  * - `scope` (on the role, or per permission; default `'any'`) works as in policies: `'global'`
  *   grants count only outside tenants (platform roles), `'tenant'` only inside the active tenant.
  * - **Resource wildcards are bounded** (`*` and `*.<action>`):
@@ -48,6 +49,7 @@
  */
 import type { Actor, QueryFilter } from '@strutvane/framework/contracts'
 import { PolicyDefinitionError } from '../errors.ts'
+import { ACTOR_ID_TYPES } from './bind.ts'
 import { FALSE } from './filter.ts'
 import type { ExtraGrant, RoleScope } from './policy.ts'
 import type { ModelSchema } from './schema.ts'
@@ -183,7 +185,6 @@ const hasColumn = (schema: ModelSchema | undefined, name: string, types?: Readon
   const column = schema.columns[name]
   return column !== undefined && (types === undefined || types.has(column.type))
 }
-const ID_TYPES: ReadonlySet<string> = new Set(['text', 'uuid'])
 
 const inScope = (actor: Actor, scope: RoleScope): boolean =>
   scope === 'any' || (scope === 'global') === (actor.tenantId === undefined)
@@ -292,7 +293,9 @@ export function compileRoleMap(config: RoleMapConfig = {}): RoleLayer {
         if (!inScope(actor, g.scope)) continue
         if (g.action !== '*' && g.action !== action) continue
         if (g.resource === '*' ? !wildcardReaches() : g.resource !== resource) continue
-        out.push(!g.own ? c.plain : hasColumn(schema, 'ownerId', ID_TYPES) ? c.owned : c.unownable)
+        out.push(
+          !g.own ? c.plain : hasColumn(schema, 'ownerId', ACTOR_ID_TYPES) ? c.owned : c.unownable,
+        )
       }
     }
     return out

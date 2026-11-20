@@ -179,7 +179,9 @@ export {
   copyAuthMigrations,
 } from './migrations.ts'
 export {
+  ACTOR_ID_TYPES,
   ActorAttributeError,
+  actorIdFor,
   type BindOptions,
   bindActor,
   isActorRef,

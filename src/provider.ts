@@ -51,9 +51,6 @@
  *
  * @module
  */
-import { existsSync, readdirSync } from 'node:fs'
-import { join } from 'node:path'
-import { pathToFileURL } from 'node:url'
 import { DatabaseToken, SessionCookieToken, sessionCookieName } from '@strutvane/framework'
 import { type Actor, HTTP_HOOKS, type HttpRequestHookPayload } from '@strutvane/framework/contracts'
 import {
@@ -84,7 +81,7 @@ import {
 import type { IdentityEngine, IdentityResult } from './identity/engine.ts'
 import { engineConfigFrom } from './identity/engine-config.ts'
 import { authenticateRequest, problemResponse } from './middleware/core.ts'
-import type { Policy } from './policy/policy.ts'
+import { loadPolicies } from './policy/discover.ts'
 import { createPermissionProvider, type StrutvanePermissionProvider } from './policy/provider.ts'
 import { compileRoleMap } from './policy/roles.ts'
 import { headerResolver, sessionResolver } from './tenancy/resolver.ts'
@@ -108,30 +105,29 @@ const MAX_BODY_BYTES = 16 * 1024
 const section = <T>(app: Application, name: string): T | undefined =>
   (app.settings as Readonly<Record<string, unknown>>)[name] as T | undefined
 
-/** `/api` + `v1` → `/api/v1` (the same rule the framework uses for its routes). */
+/** A prefix that already ends in an API version (`/api/v1`, `/api/v2`). */
+const VERSIONED = /\/v\d+$/
+
+/**
+ * Where the API lives: `config/api.ts` `prefix` + `version`, by default `/api/v1` (the URL contract,
+ * docs/05: the API under `/api/v1`, auth under `/api/v1/auth`). A prefix that already carries a
+ * version (`prefix: '/api/v1'`) is used as it is, never `/api/v1/v1`; `version: ''` means none.
+ *
+ * @example
+ * apiBase(undefined) // '/api/v1'
+ * apiBase({ prefix: '/api/v1' }) // '/api/v1'
+ * apiBase({ prefix: '/api', version: '' }) // '/api'
+ */
 export function apiBase(api: { prefix?: string; version?: string } | undefined): string {
   const prefix = (api?.prefix ?? '/api').replace(/\/+$/, '')
-  const version = (api?.version ?? 'v1').replace(/^\/+|\/+$/g, '')
-  return `/${prefix}/${version}`.replace(/\/{2,}/g, '/')
+  const version = (api?.version ?? (VERSIONED.test(prefix) ? '' : 'v1')).replace(/^\/+|\/+$/g, '')
+  return `/${prefix}/${version}`.replace(/\/{2,}/g, '/').replace(/(.)\/$/, '$1')
 }
 
-/** Load the default exports of `app/policies/*.policy.ts`. */
-export async function loadPolicies(root: string): Promise<Policy[]> {
-  const dir = join(root, 'app', 'policies')
-  if (!existsSync(dir)) return []
-  const files = readdirSync(dir)
-    .filter((f) => f.endsWith('.policy.ts'))
-    .sort()
-  const out: Policy[] = []
-  for (const file of files) {
-    const mod = (await import(pathToFileURL(join(dir, file)).href)) as { default?: unknown }
-    const policy = mod.default as Partial<Policy> | undefined
-    if (!policy || typeof policy.resource !== 'string' || typeof policy.filterFor !== 'function')
-      throw new Error(`app/policies/${file} must default-export definePolicy(...)`)
-    out.push(policy as Policy)
-  }
-  return out
-}
+export { loadPolicies } from './policy/discover.ts'
+
+/** The peer address of an in-process request in the testing environment (no socket). */
+const TEST_PEER_ADDRESS = '127.0.0.1'
 
 const tooLarge = () => new StrutvaneError('payload_too_large', { status: 413 })
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -367,7 +363,13 @@ export function createAuthProvider(): Provider {
         ...(cfg.wildcardExclude ? { wildcardExclude: cfg.wildcardExclude } : {}),
         ...(cfg.newModelDefaults ? { newModelDefaults: cfg.newModelDefaults } : {}),
       })
-      permissions = createPermissionProvider(await loadPolicies(root), { roles })
+      // Framework (class) policies stay with the framework's PolicyRegistry; auth compiles only
+      // definePolicy(...) files (AUTH-3: both styles live in app/policies).
+      const policies = await loadPolicies(root, {
+        onFrameworkPolicy: (file) =>
+          logger.debug('auth: a framework policy is left to the framework gate', { file }),
+      })
+      permissions = createPermissionProvider(policies, { roles })
       // Field-level read/write rules ride on the framework's resource hooks (integration map §4).
       registerFieldRules(app.make(HooksToken), permissions)
 
@@ -378,6 +380,7 @@ export function createAuthProvider(): Provider {
       let seedUserId: string | undefined
       const cookie = app.make(SessionCookieToken)
       const tenancyOn = tenancy?.enabled === true
+      const testing = section<{ env?: string }>(app, 'app')?.env === 'testing'
       const mailer: AuthMailer = app.container.has(AuthMailerToken)
         ? app.make(AuthMailerToken)
         : {
@@ -515,9 +518,11 @@ export function createAuthProvider(): Provider {
         async (payload, control) => {
           const p = payload as HttpRequestHookPayload
           // The socket peer (never a header) keys the per-IP limits. Without it the engine falls
-          // back to a shared bucket (fail closed) and warns once.
-          if (p.clientAddress !== undefined)
-            attachRequestMeta(p.request, { remoteAddress: p.clientAddress })
+          // back to a shared bucket (fail closed) and warns once. In-process test requests
+          // (`app.handle()` under APP_ENV=testing) have no socket: they count as loopback, the
+          // same single bucket, without the warning (AUTH-6).
+          const peer = p.clientAddress ?? (testing ? TEST_PEER_ADDRESS : undefined)
+          if (peer !== undefined) attachRequestMeta(p.request, { remoteAddress: peer })
           const url = new URL(p.request.url)
           const answer = (response: Response) => {
             control.stop()

@@ -330,10 +330,24 @@ describe('definePolicy: definition-time validation', () => {
       () => bad(({ allow }) => allow('view', { when: ({ row }) => row.amount.eq('x' as never) })),
     ],
     [
-      'actor id vs number column',
+      'actor id vs float8 column',
       () =>
         bad(({ allow }) =>
-          allow('view', { when: ({ row, actor }) => row.amount.eq(actor.id as never) }),
+          allow('view', { when: ({ row, actor }) => row.score.eq(actor.id as never) }),
+        ),
+    ],
+    [
+      'actor id vs bool column',
+      () =>
+        bad(({ allow }) =>
+          allow('view', { when: ({ row, actor }) => row.archived.eq(actor.id as never) }),
+        ),
+    ],
+    [
+      'tenant id vs int4 column',
+      () =>
+        bad(({ allow }) =>
+          allow('view', { when: ({ row, actor }) => row.amount.eq(actor.tenantId as never) }),
         ),
     ],
     [

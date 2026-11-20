@@ -3,6 +3,9 @@
  * project-local CLI from the app's `node_modules`. Plain objects in the CLI's command shape; auth
  * never imports the CLI.
  *
+ * - `install:auth`: installs auth into a v2 app (AUTH-2): registers the provider in
+ *   `bootstrap/providers.ts`, copies the migrations and writes `config/auth.ts` when missing. Every
+ *   step is idempotent; see install.ts.
  * - `auth:migration`: copies auth's migrations into `database/migrations` (native engine: the
  *   columns auth adds to the app's `users` table and auth's own tables, decision #2; files that are
  *   already there are left alone), applied by `node strut migrate`. The deprecated Better Auth
@@ -26,6 +29,7 @@ import {
 } from './admin.ts'
 import { createAppIdentity, RATE_LIMIT_TABLE } from './identity/app-identity.ts'
 import { engineConfigFrom } from './identity/engine-config.ts'
+import { ensureAuthConfig, PROVIDERS_FILE, registerAuthProvider } from './install.ts'
 import { copyAuthMigrations } from './migrations.ts'
 import { rateLimitTableSql } from './postgres/rate-limit-store.ts'
 
@@ -212,6 +216,43 @@ const migrationCommand: AuthCommand = {
   },
 }
 
+const installCommand: AuthCommand = {
+  name: 'install:auth',
+  description: 'Install sign-in into this app: register the provider, copy the migrations',
+  details:
+    'Adds @strutvane/auth/provider to bootstrap/providers.ts, copies the auth migrations into database/migrations and writes config/auth.ts if the app has none. Safe to run again: nothing that is already there is changed. Then run: node strut migrate',
+  async run(ctx) {
+    return guarded(ctx, async () => {
+      const root = ctx.requireProject().root
+      const config = ensureAuthConfig(root)
+      if (config) ctx.out.success('Created config/auth.ts')
+      const provider = await registerAuthProvider(root, { warn: (m) => ctx.out.warn(m) })
+      if (provider.status === 'added')
+        ctx.out.success(`Registered the auth provider in ${PROVIDERS_FILE}`)
+      else if (provider.status === 'unchanged')
+        ctx.out.success(`The auth provider is already registered in ${PROVIDERS_FILE}`)
+      else for (const line of provider.manual) ctx.out.line(`    ${line}`)
+      const project = await loadAuthProject(root)
+      const migrations =
+        project.auth.identity === 'better-auth'
+          ? undefined
+          : copyNativeMigrations(ctx, project.root, project.migrationsDirectory)
+      if (project.auth.identity === 'better-auth')
+        ctx.out.info('Better Auth identity: run node strut auth:migration for its tables.')
+      return {
+        // A provider that still has to be added by hand is not a finished install (exit 3).
+        ...(provider.status === 'manual' ? { exitCode: 3 } : {}),
+        data: {
+          config: config ? 'created' : 'present',
+          provider: provider.status,
+          manual: provider.manual,
+          migrations: migrations?.data ?? null,
+        },
+      }
+    })
+  },
+}
+
 const userCreateCommand: AuthCommand = {
   name: 'auth:user:create',
   description: 'Create an account (the password comes from an environment variable)',
@@ -307,6 +348,7 @@ const memberAddCommand: AuthCommand = {
 
 /** Every command auth contributes. */
 const commands: readonly AuthCommand[] = Object.freeze([
+  installCommand,
   migrationCommand,
   userCreateCommand,
   tenantCreateCommand,

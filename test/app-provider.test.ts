@@ -278,6 +278,57 @@ describe('@strutvane/auth/provider', () => {
     expect(await loadPolicies(await projectWith({ 'README.md': '' }))).toEqual([])
     const bad = await projectWith({ 'app/policies/x.policy.ts': 'export default {}\n' })
     await expect(loadPolicies(bad)).rejects.toThrow(/x\.policy\.ts/)
+    await expect(loadPolicies(bad)).rejects.toMatchObject({
+      code: 'invalid_policy_file',
+      hint: expect.stringContaining('export default class'),
+    })
+    // A named export that is not a policy class is not a policy either.
+    const named = await projectWith({ 'app/policies/y.policy.ts': 'export const YPolicy = 1\n' })
+    await expect(loadPolicies(named)).rejects.toThrow(/y\.policy\.ts/)
+  })
+
+  test('AUTH-1: apiBase keeps a prefix that already has a version; version "" means none', () => {
+    expect(apiBase({ prefix: '/api/v1' })).toBe('/api/v1')
+    expect(apiBase({ prefix: '/api/v2/' })).toBe('/api/v2')
+    expect(apiBase({ prefix: '/api' })).toBe('/api/v1')
+    expect(apiBase({ prefix: '/api', version: '' })).toBe('/api')
+    expect(apiBase({ prefix: '/', version: '' })).toBe('/')
+  })
+
+  test('AUTH-3: framework class policies (the skeleton style) load next to definePolicy ones', async () => {
+    const root = await projectWith({
+      // The skeleton's user policy, exactly as it ships (a class, framework-style).
+      'app/policies/user.policy.ts': `export default class UserPolicy {
+  view(actor, user) { return actor !== null && String(actor.id) === String(user.id) }
+}
+`,
+      // What make:migration writes for a table: a class too (here as the named export).
+      'app/policies/post.policy.ts': `export class PostPolicy { viewAny(user) { return user !== null } }
+`,
+      // An object policy (also accepted by the framework's registry).
+      'app/policies/tag.policy.ts': 'export default { before() { return undefined } }\n',
+      'app/policies/invoice.policy.ts': POLICY,
+    })
+    const skipped: string[] = []
+    const policies = await loadPolicies(root, { onFrameworkPolicy: (f) => skipped.push(f) })
+    expect(policies.map((p) => p.resource)).toEqual(['invoice'])
+    expect(skipped).toEqual([
+      'app/policies/post.policy.ts',
+      'app/policies/tag.policy.ts',
+      'app/policies/user.policy.ts',
+    ])
+    // And the provider boots with them (the acceptance run's "failed during boot" is gone).
+    const app = createApp({
+      config: { app: { root, url: 'http://localhost:3000' }, auth: {} },
+      providers: [createAuthProvider()],
+    })
+    await app.boot()
+    const permissions = app.make(PermissionProviderToken)
+    const admin: Actor = { id: '1', type: 'user', roles: ['admin'], attrs: {} }
+    expect((await permissions.can(admin, 'invoice.create', { type: 'invoice' })).allowed).toBe(true)
+    // Deny by default for a resource auth has no rule for: the framework's class policy decides.
+    expect((await permissions.can(admin, 'user.view', { type: 'user' })).allowed).toBe(false)
+    await app.shutdown()
   })
 })
 

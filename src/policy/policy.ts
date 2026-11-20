@@ -44,7 +44,7 @@
  */
 import type { Actor, Decision, QueryFilter } from '@strutvane/framework/contracts'
 import { InvalidFilterError, NotListFilterableError, PolicyDefinitionError } from '../errors.ts'
-import { ActorAttributeError, bindActor, resolveActorRef } from './bind.ts'
+import { ACTOR_ID_TYPES, ActorAttributeError, bindActor, resolveActorRef } from './bind.ts'
 import {
   type ActorProxy,
   type AttrDecl,
@@ -54,7 +54,7 @@ import {
 } from './builder.ts'
 import { evaluateFilter, type RecordValue } from './evaluate.ts'
 import { and, FALSE, fold, not, or, TRUE } from './filter.ts'
-import { type ColumnType, fitsType, type ModelSchema } from './schema.ts'
+import { type ColumnType, fitsType, type ModelSchema, resolveField } from './schema.ts'
 import { type FilterLimits, validateFilter } from './validate.ts'
 
 /** What a rule condition is written against. */
@@ -368,10 +368,17 @@ export function definePolicy<
         ...limits,
         checkActorRef: (ref, column, at) => {
           const path = ref.$actor
-          if (path === 'id' || path === 'tenantId') {
+          if (path === 'id') {
+            // Also int4: the integer primary keys of every generated table (AUTH-4).
+            if (!ACTOR_ID_TYPES.has(column)) {
+              throw new PolicyDefinitionError(
+                `${where}: ${at} compares actor.id with a ${column} column (use a text, uuid or int4 column)`,
+              )
+            }
+          } else if (path === 'tenantId') {
             if (column !== 'text' && column !== 'uuid') {
               throw new PolicyDefinitionError(
-                `${where}: ${at} compares actor.${path} with a ${column} column`,
+                `${where}: ${at} compares actor.tenantId with a ${column} column (use a text or uuid column)`,
               )
             }
           } else if (path.startsWith('attrs.') && path.length > 'attrs.'.length) {
@@ -597,10 +604,21 @@ export function definePolicy<
   }
 
   /** Bind a rule's condition for this actor, after checking every referenced actor value's type. */
+  /** A rule field's column type: decides how `actor.id` binds (an integer on int4, AUTH-4). */
+  const columnOf = (field: string): ColumnType | undefined => {
+    try {
+      return resolveField(schema, field, (reason) => {
+        throw new PolicyDefinitionError(reason)
+      }).column.type
+    } catch {
+      return undefined
+    }
+  }
+
   const bound = (rule: Rule, actor: Actor | null): QueryFilter => {
     if (!rule.when) return TRUE
     for (const [path, column] of rule.refs) {
-      const value = resolveActorRef({ $actor: path as 'id' }, actor)
+      const value = resolveActorRef({ $actor: path as 'id' }, actor, column)
       if (value !== null && !fitsType(value, column)) {
         throw new ActorAttributeError(
           `actor.${path} does not fit column type ${column} (policy ${resource})`,
@@ -608,7 +626,7 @@ export function definePolicy<
       }
     }
     // Allow rules bind fail-closed: an unknown (null) actor value never widens access.
-    return fold(bindActor(rule.when, actor, { failClosed: rule.info.effect === 'allow' }))
+    return fold(bindActor(rule.when, actor, { failClosed: rule.info.effect === 'allow', columnOf }))
   }
 
   const cover = (rule: Rule, actor: Actor | null, record: RecordValue | undefined): Cover => {
