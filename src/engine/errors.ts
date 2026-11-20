@@ -79,7 +79,7 @@ export const AUTH_MESSAGES: Readonly<Record<AuthErrorCode, string>> = Object.fre
   not_found: 'Not found.',
   password_confirmation_required: 'Confirm your password to continue.',
   conflict: 'This conflicts with the current state.',
-  last_admin: 'A team needs at least one admin.',
+  last_admin: 'A team needs at least one owner.',
   internal_error: 'Something went wrong.',
 })
 

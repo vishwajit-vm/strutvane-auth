@@ -363,25 +363,25 @@ describe('config', () => {
     expect(c.appUrl).toBe('https://app.example.com')
     expect(c.roles).toEqual(['admin', 'member'])
     expect(
-      defineAuthConfig({ appUrl: 'http://x.test', roles: 'admin-manager-member-viewer' }).roles,
+      defineAuthConfig({ appUrl: 'https://x.test', roles: 'admin-manager-member-viewer' }).roles,
     ).toEqual(['admin', 'manager', 'member', 'viewer'])
   })
   it('fails at boot on nonsense', () => {
     expect(() =>
-      defineAuthConfig({ appUrl: 'http://x.test', features: { passkeys: true } }),
+      defineAuthConfig({ appUrl: 'https://x.test', features: { passkeys: true } }),
     ).toThrow(/passkeys/)
-    expect(() => defineAuthConfig({ appUrl: 'http://x.test', passwords: { min: 4 } })).toThrow(
+    expect(() => defineAuthConfig({ appUrl: 'https://x.test', passwords: { min: 4 } })).toThrow(
       RangeError,
     )
     expect(() =>
-      defineAuthConfig({ appUrl: 'http://x.test', twoFactor: { recoveryCodes: 4 } }),
+      defineAuthConfig({ appUrl: 'https://x.test', twoFactor: { recoveryCodes: 4 } }),
     ).toThrow(RangeError)
     expect(() =>
-      defineAuthConfig({ appUrl: 'http://x.test', tokens: { abilities: ['DROP TABLE'] } }),
+      defineAuthConfig({ appUrl: 'https://x.test', tokens: { abilities: ['DROP TABLE'] } }),
     ).toThrow(TypeError)
     expect(() =>
       defineAuthConfig({
-        appUrl: 'http://x.test',
+        appUrl: 'https://x.test',
         limits: { loginPerIp: { max: 0, windowSeconds: 60 } },
       }),
     ).toThrow(RangeError)
@@ -423,6 +423,21 @@ describe('config', () => {
     expect(() =>
       defineAuthConfig({ appUrl: 'http://staging.acme.test', features: { emailLink: true } }),
     ).toThrow(/emailLink/)
+    // Every sign-in method sets cookies: plain http outside local development is refused for each.
+    for (const features of [{}, { password: false, passkeys: true }, { password: false, emailLink: true }])
+      expect(
+        () =>
+          defineAuthConfig({
+            appUrl: 'http://app.example.com',
+            features,
+            passkeys: { rpId: 'example.com', rpName: 'Acme', origins: ['https://app.example.com'] },
+          }),
+        JSON.stringify(features),
+      ).toThrow(/https/)
+    // Without any sign-in method there is no cookie: such a config is allowed on http.
+    expect(() =>
+      defineAuthConfig({ appUrl: 'http://app.example.com', features: { password: false } }),
+    ).not.toThrow()
     for (const local of [
       'http://localhost:3000',
       'http://127.0.0.1:8080',

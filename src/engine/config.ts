@@ -54,7 +54,20 @@ export type AuthFeaturesInput = Partial<Omit<AuthFeatures, 'passwordReset'>> & {
   readonly passwordReset?: true
 }
 
-/** The starting role presets (question 10). Role NAMES live in code; only assignments are rows. */
+/**
+ * The role that runs a team (a tenant): its creator holds it, and only it manages members and
+ * invitations. Reserved: it is never a global (platform) role, so a self-made team owner can
+ * never match a grant written for platform roles such as `admin`.
+ */
+export const TEAM_OWNER_ROLE = 'owner'
+
+/** The platform administrator role (global only; never a team role). */
+export const PLATFORM_ADMIN_ROLE = 'admin'
+
+/**
+ * The starting global role presets (question 10). Role NAMES live in code; only assignments are
+ * rows. Team roles default to `owner` plus the preset's roles other than `admin`.
+ */
 export const ROLE_PRESETS = {
   'admin-member': ['admin', 'member'],
   'admin-manager-member-viewer': ['admin', 'manager', 'member', 'viewer'],
@@ -132,10 +145,16 @@ export interface AuthConfigInput {
     readonly prefix?: string
   }
   /**
-   * The role names: a preset (installer question 10), or the app's own list (the keys of the
-   * `config/auth.ts` role map). A list must contain `admin`, the role that manages a team.
+   * The global (platform) role names: a preset (installer question 10), or the app's own list.
+   * A list must contain `admin` and must not contain `owner` (the reserved team role).
    */
   readonly roles?: RolePreset | readonly string[]
+  /**
+   * The team (tenant) role names: what an invitation or a membership may carry. Must contain
+   * `owner` (the role that runs a team) and must not contain `admin` (the platform role). Default:
+   * `owner` plus the global roles other than `admin`.
+   */
+  readonly tenantRoles?: readonly string[]
   readonly teams?: {
     /**
      * Give every new user a personal team (Laravel's teams kit). Default `true`. B2B apps where a
@@ -205,7 +224,10 @@ export interface AuthConfig {
     readonly maxExpiryMs: number
     readonly prefix: string
   }
+  /** Global (platform) role names; always with `admin`, never with `owner`. */
   readonly roles: readonly string[]
+  /** Team role names; always with `owner`, never with `admin`. */
+  readonly tenantRoles: readonly string[]
   readonly teams: { readonly personal: boolean }
   readonly passkeys: PasskeyConfig | undefined
   readonly limits: RateLimits
@@ -297,7 +319,15 @@ function checkPasskeys(config: PasskeyConfig): PasskeyConfig {
 
 const ROLE_NAME = /^[a-z][a-z0-9_-]{0,63}$/
 
-/** A preset's roles, or a checked custom list (lowercase names, no duplicates, with `admin`). */
+/** A checked list of role names (lowercase, no duplicates). */
+function roleList(name: string, roles: unknown): readonly string[] {
+  if (!Array.isArray(roles) || roles.some((r) => typeof r !== 'string' || !ROLE_NAME.test(r)))
+    throw new TypeError(`auth config: ${name} must be lowercase names like \`admin\` or \`team-lead\``)
+  if (new Set(roles).size !== roles.length) throw new TypeError(`auth config: ${name} has duplicates`)
+  return Object.freeze([...(roles as string[])])
+}
+
+/** A preset's roles, or a checked custom list (with `admin`, without `owner`). */
 function resolveRoles(roles: RolePreset | readonly string[] | undefined): readonly string[] {
   if (roles === undefined || typeof roles === 'string') {
     const preset = ROLE_PRESETS[roles ?? 'admin-member']
@@ -305,12 +335,34 @@ function resolveRoles(roles: RolePreset | readonly string[] | undefined): readon
       throw new TypeError(`auth config: unknown role preset ${JSON.stringify(roles)}`)
     return Object.freeze([...preset])
   }
-  if (!Array.isArray(roles) || roles.some((r) => typeof r !== 'string' || !ROLE_NAME.test(r)))
-    throw new TypeError('auth config: roles must be lowercase names like `admin` or `team-lead`')
-  if (new Set(roles).size !== roles.length) throw new TypeError('auth config: roles has duplicates')
-  if (!roles.includes('admin'))
-    throw new TypeError('auth config: roles must include `admin` (it manages teams and members)')
-  return Object.freeze([...roles])
+  const list = roleList('roles', roles)
+  if (!list.includes(PLATFORM_ADMIN_ROLE))
+    throw new TypeError('auth config: roles must include `admin` (the platform administrator)')
+  if (list.includes(TEAM_OWNER_ROLE))
+    throw new TypeError(
+      'auth config: `owner` is the reserved team role and cannot be a global role (list it in tenantRoles)',
+    )
+  return list
+}
+
+/**
+ * The team roles (with `owner`, without `admin`). Kept apart from the global roles so a team role
+ * anyone can give themselves (create a team) never carries a platform role's grants.
+ */
+function resolveTenantRoles(
+  tenantRoles: readonly string[] | undefined,
+  global: readonly string[],
+): readonly string[] {
+  if (tenantRoles === undefined)
+    return Object.freeze([TEAM_OWNER_ROLE, ...global.filter((r) => r !== PLATFORM_ADMIN_ROLE)])
+  const list = roleList('tenantRoles', tenantRoles)
+  if (!list.includes(TEAM_OWNER_ROLE))
+    throw new TypeError('auth config: tenantRoles must include `owner` (it runs a team)')
+  if (list.includes(PLATFORM_ADMIN_ROLE))
+    throw new TypeError(
+      'auth config: `admin` is the platform role and cannot be a team role (teams are run by `owner`)',
+    )
+  return list
 }
 
 /** RFC 6265 token characters, and never a prefix (the prefix is decided by the scheme). */
@@ -365,6 +417,17 @@ export function defineAuthConfig(input: AuthConfigInput): AuthConfig {
     throw new TypeError(
       'auth config: features.emailLink needs an https appUrl outside local development',
     )
+  // Every way to sign in hands the browser cookies (the session, the remembered device, the
+  // registration and email-link nonces). Over plain http they lose `__Host-` and `Secure`: anyone
+  // on the path reads them, and a sibling host can plant its own. HTTPS outside local development.
+  if (
+    (features.password || features.emailLink || features.passkeys) &&
+    url.protocol !== 'https:' &&
+    !isLocalHost(url.hostname)
+  )
+    throw new TypeError(
+      'auth config: appUrl must use https outside local development (sign-in cookies need __Host- and Secure); set APP_URL to the public https:// address',
+    )
   if (features.passkeys && input.passkeys === undefined)
     throw new TypeError(
       'auth config: features.passkeys needs a `passkeys: { rpId, rpName, origins }` block',
@@ -402,6 +465,7 @@ export function defineAuthConfig(input: AuthConfigInput): AuthConfig {
   const lockoutMaxMs = positive('lockout.maxSeconds', input.lockout?.maxSeconds ?? 3600) * 1000
   if (lockoutMaxMs < lockoutBaseMs)
     throw new RangeError('auth config: lockout.maxSeconds must be at least lockout.baseSeconds')
+  const roles = resolveRoles(input.roles)
   const prefix = input.tokens?.prefix ?? 'svp_'
   if (!/^[a-z]{2,8}_$/.test(prefix))
     throw new TypeError('auth config: tokens.prefix must look like `abc_`')
@@ -451,7 +515,8 @@ export function defineAuthConfig(input: AuthConfigInput): AuthConfig {
         positive('tokens.maxExpiryDays', input.tokens?.maxExpiryDays ?? 365) * 24 * 60 * MINUTE,
       prefix,
     },
-    roles: resolveRoles(input.roles),
+    roles,
+    tenantRoles: resolveTenantRoles(input.tenantRoles, roles),
     teams: Object.freeze({ personal: input.teams?.personal ?? true }),
     passkeys: input.passkeys === undefined ? undefined : checkPasskeys(input.passkeys),
     limits: Object.freeze(limits),

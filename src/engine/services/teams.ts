@@ -5,9 +5,12 @@
  * this service only decides membership and exposes the current team, re-reading the membership on
  * every request so a removed member loses access immediately.
  *
- * - **Roles** come from the configured preset (`admin`+`member`, or
- *   `admin`+`manager`+`member`+`viewer`). Only `admin` manages members and invitations here; the
- *   other roles mean what the app's policies say. A team always keeps at least one admin.
+ * - **Roles** are the app's TEAM roles (`config.tenantRoles`: `owner` plus the tenant roles of
+ *   the role map, or of the preset). They are kept apart from the global (platform) roles: a team
+ *   role is never `admin`, and a platform role is never given inside a team. Only `owner` manages
+ *   members and invitations here; the other roles mean what the app's policies say. A team always
+ *   keeps at least one owner. Anyone who can sign up can create a team and own it, which is why
+ *   `owner` is reserved for teams.
  * - **Invitations** are 256-bit tokens stored as keyed digests, expire (7 days), are single-use, and
  *   are bound to the invited EMAIL: only a signed-in user with exactly that (normalised, and, when
  *   verification is on, verified) address can accept. A forwarded invitation is useless.
@@ -19,6 +22,7 @@
  * @module
  */
 
+import { TEAM_OWNER_ROLE } from '../config.ts'
 import { type AuthDeps, emit, requireFeature, sendMail } from '../core/deps.ts'
 import {
   type ActiveSession,
@@ -42,7 +46,7 @@ export interface CurrentTeam {
   readonly role: string
 }
 
-/** An invitation as listed for team admins (no token). */
+/** An invitation as listed for team owners (no token). */
 export interface InvitationView {
   readonly id: string
   readonly email: string
@@ -53,7 +57,7 @@ export interface InvitationView {
 /** Team operations (feature `teams`). */
 export interface TeamService {
   /**
-   * Create a team; the creator becomes its admin and it becomes their current team.
+   * Create a team; the creator becomes its owner and it becomes their current team.
    *
    * @example
    * ```ts
@@ -71,7 +75,7 @@ export interface TeamService {
   /** Make another team current (rotates the session id). */
   switch(req: AuthRequest, input: { readonly teamId: unknown }): Promise<CurrentTeam>
   /**
-   * Invite an email address (team admins only).
+   * Invite an email address (team owners only) with a team role.
    *
    * @example
    * ```ts
@@ -97,7 +101,7 @@ export interface TeamService {
     req: AuthRequest,
     input: { readonly teamId: unknown; readonly userId: unknown; readonly role: unknown },
   ): Promise<void>
-  /** Remove a member (admins), or leave (anyone, for themselves). The last admin cannot go. */
+  /** Remove a member (owners), or leave (anyone, for themselves). The last owner cannot go. */
   removeMember(
     req: AuthRequest,
     input: { readonly teamId: unknown; readonly userId: unknown },
@@ -145,7 +149,7 @@ export async function createPersonalTeam(
     personal: true,
     createdAt: deps.clock.now(),
   }
-  await deps.store.createTeam(team, { teamId: team.id, userId: user.id, role: 'admin' })
+  await deps.store.createTeam(team, { teamId: team.id, userId: user.id, role: TEAM_OWNER_ROLE })
   await deps.store.updateUser(user.id, { currentTeamId: team.id })
   await emit(deps, req, { type: 'team.created', userId: user.id, teamId: team.id })
   return team
@@ -153,7 +157,7 @@ export async function createPersonalTeam(
 
 /** Build the {@link TeamService}. */
 export function teamService(deps: AuthDeps): TeamService {
-  const roles = deps.config.roles
+  const roles = deps.config.tenantRoles
 
   const signedIn = async (req: AuthRequest): Promise<ActiveSession> => {
     requireFeature(deps, 'teams')
@@ -183,9 +187,9 @@ export function teamService(deps: AuthDeps): TeamService {
     return { team, member }
   }
 
-  const adminOf = async (active: ActiveSession, teamId: unknown) => {
+  const ownerOf = async (active: ActiveSession, teamId: unknown) => {
     const m = await membership(active, teamId)
-    if (m.member.role !== 'admin') throw new AuthError('forbidden')
+    if (m.member.role !== TEAM_OWNER_ROLE) throw new AuthError('forbidden')
     return m
   }
 
@@ -215,13 +219,13 @@ export function teamService(deps: AuthDeps): TeamService {
         personal: false,
         createdAt: deps.clock.now(),
       }
-      const owner = { teamId: team.id, userId: active.user.id, role: 'admin' }
+      const owner = { teamId: team.id, userId: active.user.id, role: TEAM_OWNER_ROLE }
       if (!(await deps.store.createTeam(team, owner)))
         throw new AuthError('validation_failed', { issues: [{ field: 'slug', code: 'taken' }] })
       await deps.store.updateUser(active.user.id, { currentTeamId: team.id })
       await rotateSession(deps, req, active.session)
       await emit(deps, req, { type: 'team.created', userId: active.user.id, teamId: team.id })
-      return { id: team.id, name: team.name, slug: team.slug, role: 'admin' }
+      return { id: team.id, name: team.name, slug: team.slug, role: TEAM_OWNER_ROLE }
     },
 
     async current(req) {
@@ -250,7 +254,7 @@ export function teamService(deps: AuthDeps): TeamService {
 
     async invite(req, input) {
       const active = await grantingAs(req)
-      const { team } = await adminOf(active, input.teamId)
+      const { team } = await ownerOf(active, input.teamId)
       const email = parseEmail(input.email)
       if (email === undefined)
         throw new AuthError('validation_failed', { issues: [{ field: 'email', code: 'invalid' }] })
@@ -296,7 +300,7 @@ export function teamService(deps: AuthDeps): TeamService {
 
     async invitations(req, input) {
       const active = await signedIn(req)
-      const { team } = await adminOf(active, input.teamId)
+      const { team } = await ownerOf(active, input.teamId)
       return (await deps.store.listInvitations(team.id)).map((i) => ({
         id: i.id,
         email: i.email,
@@ -307,7 +311,7 @@ export function teamService(deps: AuthDeps): TeamService {
 
     async revokeInvitation(req, input) {
       const active = await signedIn(req)
-      const { team } = await adminOf(active, input.teamId)
+      const { team } = await ownerOf(active, input.teamId)
       const invitation = (await deps.store.listInvitations(team.id)).find(
         (i) => i.id === input.invitationId,
       )
@@ -358,7 +362,7 @@ export function teamService(deps: AuthDeps): TeamService {
 
     async changeRole(req, input) {
       const active = await grantingAs(req)
-      const { team } = await adminOf(active, input.teamId)
+      const { team } = await ownerOf(active, input.teamId)
       const role = parseRole(input.role)
       if (typeof input.userId !== 'string') throw new AuthError('not_found')
       // One atomic store operation: a read-then-write check let two admins demote each other.
@@ -379,7 +383,7 @@ export function teamService(deps: AuthDeps): TeamService {
       const { team, member } = await membership(active, input.teamId)
       if (typeof input.userId !== 'string') throw new AuthError('not_found')
       const leaving = input.userId === active.user.id
-      if (!leaving && member.role !== 'admin') throw new AuthError('forbidden')
+      if (!leaving && member.role !== TEAM_OWNER_ROLE) throw new AuthError('forbidden')
       const outcome = await deps.store.changeMemberRole(team.id, input.userId, null)
       if (outcome === 'not-found') throw new AuthError('not_found')
       if (outcome === 'last-admin') throw new AuthError('last_admin')

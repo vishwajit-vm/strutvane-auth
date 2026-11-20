@@ -6,8 +6,11 @@
  * {@link IdentityEngine} contract, so it passes the same contract suite as any other engine and
  * the provider, the middleware and the tenancy layer stay engine-agnostic.
  *
- * - **Tenants are teams.** A tenant's creator is its `admin`; tenant roles come from membership,
- *   re-read on every request, never mixed with global roles.
+ * - **Tenants are teams.** A tenant's creator is its `owner` (a reserved tenant role, never a
+ *   platform role); tenant roles come from membership, re-read on every request, never mixed with
+ *   global roles. A membership role that is not a tenant role of this app grants nothing.
+ * - **Features are exactly what `config` says.** No feature is switched on here: registration,
+ *   teams and every other optional feature are off unless `config.features` turns them on.
  * - **Storage is a port.** Pass the store for your database (`postgresAuthStore`,
  *   `sqliteAuthStore`); the default in-memory store is for tests and demos only.
  * - **Secrets are never stored as values.** Session ids, reset tokens and every other secret are
@@ -23,7 +26,12 @@
 import { randomBytes } from 'node:crypto'
 import type { Actor, Logger } from '@strutvane/framework/contracts'
 import { type Auth, createAuth } from '../engine/auth.ts'
-import { type AuthConfigInput, defineAuthConfig, type RateLimits } from '../engine/config.ts'
+import {
+  type AuthConfigInput,
+  defineAuthConfig,
+  type RateLimits,
+  TEAM_OWNER_ROLE,
+} from '../engine/config.ts'
 import { AuthError, type AuthErrorCode } from '../engine/errors.ts'
 import { fetchCookieJar } from '../engine/http/cookies.ts'
 import { createScryptHasher, type PasswordHasher } from '../engine/password/hasher.ts'
@@ -59,8 +67,9 @@ export interface NativeEngineOptions {
   readonly baseURL: string
   /**
    * `config/auth.ts` engine settings: features, passwords, sessions, links, two-factor, tokens,
-   * roles, passkeys, limits, lockout. Defaults suit the identity contract: registration and
-   * teams on (the provider decides which routes exist), personal teams off.
+   * roles, passkeys, limits, lockout. Every optional feature is OFF unless set here (the app
+   * provider passes `engineConfigFrom(config/auth.ts)`, which sets every key); personal teams are
+   * off unless `teams.personal` is set.
    */
   readonly config?: Omit<AuthConfigInput, 'appUrl'>
   /** Where identity data lives. Default: in memory (lost on restart; tests and demos). */
@@ -111,13 +120,13 @@ export interface NativeEngineOptions {
 export interface NativeIdentityEngine extends IdentityEngine {
   /** The auth core this engine runs on (two-factor, passkeys, tokens, teams, impersonation…). */
   readonly auth: Auth
-  /** The role a tenant's creator gets (`admin`). */
+  /** The role a tenant's creator gets (`owner`). */
   readonly ownerRole: string
 }
 
 const ROLE = /^[a-z][a-z0-9_-]{0,63}$/
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-const OWNER_ROLE = 'admin'
+const OWNER_ROLE = TEAM_OWNER_ROLE
 
 /** Engine error → contract code. Anything not listed is unexpected (`internal_error`). */
 const CODE_MAP: Partial<Record<AuthErrorCode, IdentityErrorCode>> = {
@@ -237,7 +246,6 @@ export function createNativeEngine(options: NativeEngineOptions): NativeIdentity
   const config = defineAuthConfig({
     ...input,
     appUrl: options.baseURL,
-    features: { registration: true, teams: true, ...input.features },
     teams: { personal: false, ...input.teams },
     limits: { ...engineLimits(options.rateLimits), ...input.limits },
     ...(ttl !== undefined
@@ -271,7 +279,9 @@ export function createNativeEngine(options: NativeEngineOptions): NativeIdentity
       },
     },
   })
-  const defaultRoles = Object.freeze((options.defaultRoles ?? []).filter((r) => ROLE.test(r)))
+  /** A global role name: well formed and never the reserved tenant role (fail closed). */
+  const isGlobalRole = (r: string): boolean => ROLE.test(r) && r !== OWNER_ROLE
+  const defaultRoles = Object.freeze((options.defaultRoles ?? []).filter(isGlobalRole))
 
   let warnedNoPeer = false
   /** The engine's view of a request: cookies (collecting Set-Cookie) and the resolved client IP. */
@@ -311,9 +321,9 @@ export function createNativeEngine(options: NativeEngineOptions): NativeIdentity
   }): Promise<readonly string[]> => {
     if (options.globalRoles) {
       const roles = await options.globalRoles({ userId: user.id, email: user.email })
-      return roles.filter((r) => ROLE.test(r))
+      return roles.filter(isGlobalRole)
     }
-    return user.roles.length > 0 ? user.roles : defaultRoles
+    return user.roles.length > 0 ? user.roles.filter(isGlobalRole) : defaultRoles
   }
 
   const actorFor = async (req: AuthRequest): Promise<Actor | null> => {
@@ -324,8 +334,12 @@ export function createNativeEngine(options: NativeEngineOptions): NativeIdentity
       ? await options.actorAttributes({ userId: state.user.id, tenantId })
       : {}
     const attrs = Object.freeze({ ...extra, emailVerified: state.user.emailVerified })
+    // Inside a team the actor holds only its membership role, and only when it is a tenant role of
+    // this app (a stale or hand-written row with a platform role name grants nothing).
     const roles = state.team
-      ? [state.team.role]
+      ? config.tenantRoles.includes(state.team.role)
+        ? [state.team.role]
+        : []
       : await globalRolesFor({ id: state.user.id, email: state.user.email, roles: state.roles })
     const base = {
       id: state.user.id,

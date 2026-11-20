@@ -4,10 +4,10 @@
  *
  * ```ts
  * roles: {
- *   admin:  { permissions: ['*', { action: 'user.update', scope: 'global' }] },
- *   member: { permissions: ['*.viewAny', '*.view', '*.create', { action: '*.update', own: true }] },
- *   viewer: { permissions: ['*.viewAny', '*.view'] },
- *   owner:  { scope: 'tenant', permissions: ['*'] },
+ *   admin:  { permissions: ['*', 'user.update'] },                          // platform (global)
+ *   member: { scope: 'tenant', permissions: ['*.viewAny', '*.view', { action: '*.update', own: true }] },
+ *   viewer: { scope: 'any', permissions: ['*.viewAny', '*.view'] },           // both places
+ *   owner:  { permissions: ['*'] },                                          // runs a tenant
  * },
  * wildcardExclude: ['user', 'session', 'role', 'auditEvent'],
  * newModelDefaults: 'inherit-role-patterns',
@@ -21,8 +21,16 @@
  *   It **fails closed**: on a resource whose schema has no text/uuid `ownerId` column (or whose
  *   schema is unknown, i.e. no policy and no `schemas` entry), it never matches. A null actor id
  *   never matches either (fail-closed binding, ADR-0008).
- * - `scope` (on the role, or per permission; default `'any'`) works as in policies: `'global'`
- *   grants count only outside tenants (platform roles), `'tenant'` only inside the active tenant.
+ * - **Platform roles and tenant roles are kept apart.** A role's `scope` says where it lives:
+ *   - no scope, or `'global'`: a platform role. Its grants count only outside tenants, and it can
+ *     never be given inside a tenant (invitations and memberships refuse it);
+ *   - `'tenant'`: a tenant role (members of a tenant hold it there);
+ *   - `'any'`: deliberately both. Inside a tenant its grants reach only resources whose schema has
+ *     a `tenantId` column (exact grants included), so it never opens platform-wide data there.
+ *   `owner` is reserved: the role a tenant's creator holds and the only one that manages members.
+ *   Anyone who can sign up can create a tenant and hold it, so it is always tenant-scoped and can
+ *   never be a platform role. `admin` is the platform administrator and never a tenant role.
+ *   A permission's own `scope` may narrow an `'any'` role's scope; it never widens a role's.
  * - **Resource wildcards are bounded** (`*` and `*.<action>`):
  *   - they never match a resource listed in `wildcardExclude` (identity, authorization, tenancy
  *     and audit records); those are granted by exact `'<resource>.<action>'` only, and naming
@@ -67,8 +75,64 @@ export type RolePermission =
 /** A role and its permissions. */
 export interface RoleDefinition {
   readonly permissions: readonly RolePermission[]
-  /** Where the role's grants count (default `'any'`); see {@link RoleScope}. */
+  /**
+   * Where the role lives and its grants count: `'global'` (the default; a platform role),
+   * `'tenant'` (a tenant role) or `'any'` (both, bounded to tenant data inside a tenant). `owner`
+   * defaults to, and must be, `'tenant'`.
+   */
   readonly scope?: RoleScope
+}
+
+/** The reserved role a tenant's creator holds (always tenant-scoped, never a platform role). */
+export const TENANT_OWNER_ROLE = 'owner'
+
+/** The platform administrator role (always platform-scoped, never a tenant role). */
+export const PLATFORM_ADMIN_ROLE = 'admin'
+
+/**
+ * The scope a role has when the role map does not set one.
+ *
+ * @example
+ * defaultRoleScope('owner') // 'tenant'
+ */
+export function defaultRoleScope(role: string): RoleScope {
+  return role === TENANT_OWNER_ROLE ? 'tenant' : 'global'
+}
+
+/** The role names of a role map, split by where they may be held. */
+export interface RolePartition {
+  /** Platform roles (`admin` always; never `owner`): global user roles may only be these. */
+  readonly global: readonly string[]
+  /** Tenant roles (`owner` always; never `admin`): memberships and invitations may only be these. */
+  readonly tenant: readonly string[]
+}
+
+/**
+ * Split a role map's names into platform and tenant roles by each role's scope (see the module
+ * docs). Invalid entries are skipped here; `compileRoleMap` reports them at boot.
+ *
+ * @example
+ * partitionRoles({ member: { scope: 'tenant', permissions: [] } })
+ * // { global: ['admin'], tenant: ['owner', 'member'] }
+ */
+export function partitionRoles(
+  roles: Readonly<Record<string, RoleDefinition>> | undefined,
+): RolePartition {
+  const global = new Set<string>([PLATFORM_ADMIN_ROLE])
+  const tenant = new Set<string>([TENANT_OWNER_ROLE])
+  for (const [role, definition] of Object.entries(roles ?? {})) {
+    if (!ROLE_NAME.test(role) || role === TENANT_OWNER_ROLE || role === PLATFORM_ADMIN_ROLE)
+      continue
+    const scope: unknown = isRecord(definition) ? definition['scope'] : undefined
+    const where =
+      typeof scope === 'string' && SCOPES.has(scope) ? (scope as RoleScope) : defaultRoleScope(role)
+    if (where !== 'tenant') global.add(role)
+    if (where !== 'global') tenant.add(role)
+  }
+  return Object.freeze({
+    global: Object.freeze([...global]),
+    tenant: Object.freeze([...tenant]),
+  })
 }
 
 /** What models not named in the role map get (see the module docs). */
@@ -103,6 +167,8 @@ export interface RoleLayer {
   /** Resources resource wildcards never match. */
   readonly wildcardExclude: readonly string[]
   readonly newModelDefaults: NewModelDefaults
+  /** The role names split into platform and tenant roles (see {@link partitionRoles}). */
+  readonly partition: RolePartition
   /**
    * The grants that apply to `actor` for `<resource>.<action>`, ready for a policy's
    * `decide`/`filterFor` (see {@link ExtraGrant}). `schema` is the resource's model schema, used
@@ -220,7 +286,15 @@ export function compileRoleMap(config: RoleMapConfig = {}): RoleLayer {
       continue
     }
     unknownKeys(where, definition, ROLE_KEYS)
-    const roleScope = scopeOf(where, definition['scope'], 'any')
+    const roleScope = scopeOf(where, definition['scope'], defaultRoleScope(role))
+    if (role === TENANT_OWNER_ROLE && roleScope !== 'tenant')
+      fail(
+        `${where}: owner is the reserved tenant role (anyone who creates a tenant holds it); its scope can only be 'tenant'`,
+      )
+    if (role === PLATFORM_ADMIN_ROLE && roleScope !== 'global')
+      fail(
+        `${where}: admin is the platform role and is never held inside a tenant; give tenant permissions to owner or a tenant role`,
+      )
     const permissions = definition['permissions']
     if (!Array.isArray(permissions)) fail(`${where}.permissions must be a list`)
     for (const [i, entry] of (permissions as unknown[]).entries()) {
@@ -235,6 +309,12 @@ export function compileRoleMap(config: RoleMapConfig = {}): RoleLayer {
           fail(`${at}: own must be true or false`)
         own = entry['own'] === true
         scope = scopeOf(at, entry['scope'], roleScope)
+        // A permission may narrow an `any` role, never widen a role: a platform role is never held
+        // inside a tenant, and a tenant role never outside one.
+        if (roleScope !== 'any' && scope !== roleScope)
+          fail(
+            `${at}: scope '${scope}' never applies to ${role}, a ${roleScope === 'global' ? 'platform' : 'tenant'} role (set the role's scope to 'any' to use it in both places)`,
+          )
       } else if (typeof entry !== 'string') {
         fail(`${at}: expected a permission string or { action, own?, scope? }`)
       }
@@ -286,10 +366,18 @@ export function compileRoleMap(config: RoleMapConfig = {}): RoleLayer {
       wildcardOk ??= !excluded.has(resource) && (!inTenant || hasColumn(schema, 'tenantId'))
       return wildcardOk
     }
+    // Inside a tenant, an `any` grant (a role deliberately held in both places) reaches only
+    // tenant data: never a platform-wide resource, not even by exact name.
+    let tenantData: boolean | undefined
+    const reachesTenantData = (): boolean => {
+      tenantData ??= hasColumn(schema, 'tenantId')
+      return tenantData
+    }
     for (const role of new Set(actor.roles)) {
       for (const c of byRole.get(role) ?? []) {
         const g = c.info
         if (!inScope(actor, g.scope)) continue
+        if (inTenant && g.scope === 'any' && !reachesTenantData()) continue
         if (g.action !== '*' && g.action !== action) continue
         if (g.resource === '*' ? !wildcardReaches() : g.resource !== resource) continue
         out.push(!g.own ? c.plain : hasColumn(schema, 'ownerId', ID_TYPES) ? c.owned : c.unownable)
@@ -302,6 +390,7 @@ export function compileRoleMap(config: RoleMapConfig = {}): RoleLayer {
     grants: Object.freeze(compiled.map((c) => c.info)),
     wildcardExclude: Object.freeze([...excluded]),
     newModelDefaults: newModelDefaults as NewModelDefaults,
+    partition: partitionRoles(roles as Readonly<Record<string, RoleDefinition>>),
     grantsFor,
   })
 }

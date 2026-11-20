@@ -7,6 +7,7 @@
  * @module
  */
 
+import { TEAM_OWNER_ROLE } from '../config.ts'
 import type { Clock } from '../ports/clock.ts'
 import { systemClock } from '../ports/clock.ts'
 import type { CounterStore } from '../ports/counter-store.ts'
@@ -217,9 +218,9 @@ export function memoryAuthStore(): AuthStore {
       const m = members.get(mKey(teamId, userId))
       if (!m) return 'not-found'
       const otherAdmin = [...members.values()].some(
-        (o) => o.teamId === teamId && o.userId !== userId && o.role === 'admin',
+        (o) => o.teamId === teamId && o.userId !== userId && o.role === TEAM_OWNER_ROLE,
       )
-      if (m.role === 'admin' && role !== 'admin' && !otherAdmin) return 'last-admin'
+      if (m.role === TEAM_OWNER_ROLE && role !== TEAM_OWNER_ROLE && !otherAdmin) return 'last-admin'
       if (role === null) members.delete(mKey(teamId, userId))
       else members.set(mKey(teamId, userId), { ...m, role })
       return 'ok'

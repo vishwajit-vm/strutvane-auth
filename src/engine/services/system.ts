@@ -4,11 +4,12 @@
  * session and no rate limit here, so callers authorise the caller themselves.
  *
  * They keep every rule the request-facing services keep (email and password rules, roles from the
- * configured preset, unique slugs, the atomic last-admin guard) and emit the same audit events,
+ * configured lists, unique slugs, the atomic last-owner guard) and emit the same audit events,
  * with no actor (`actorId: null`: the system did it).
  *
  * @module
  */
+import { TEAM_OWNER_ROLE } from '../config.ts'
 import { type AuthDeps, emit } from '../core/deps.ts'
 import { newId } from '../crypto/random.ts'
 import { AuthError } from '../errors.ts'
@@ -17,7 +18,7 @@ import { assertPasswordAllowed } from '../password/rules.ts'
 import type { MemberRecord, TeamRecord, UserRecord } from '../ports/store.ts'
 import { createPersonalTeam, parseTeamName, parseTeamSlug } from './teams.ts'
 
-/** The outcome of a membership change: `last-admin` when it would leave a team without an admin. */
+/** The outcome of a membership change: `last-admin` when it would leave a team without an owner. */
 export type MembershipOutcome = 'ok' | 'last-admin' | 'not-found'
 
 /** A team member with their account, for rosters. */
@@ -52,7 +53,8 @@ export interface SystemService {
    */
   findUserByEmail(email: unknown): Promise<UserRecord | undefined>
   /**
-   * Replace a user's global roles (outside teams). Each role must be in the configured preset.
+   * Replace a user's global roles (outside teams). Each role must be a global role of the app
+   * (`owner`, the reserved team role, never is).
    * Emits `role.assigned` for every role the user did not hold before.
    *
    * @example
@@ -67,7 +69,7 @@ export interface SystemService {
    */
   rolesOf(userId: string): Promise<readonly string[]>
   /**
-   * Create a team owned by `ownerId` (who becomes its admin). `validation_failed` for a bad name
+   * Create a team owned by `ownerId` (who becomes its `owner`). `validation_failed` for a bad name
    * or slug, a taken slug, or an unknown owner.
    *
    * @example
@@ -86,8 +88,9 @@ export interface SystemService {
    */
   findTeamBySlug(slug: unknown): Promise<TeamRecord | undefined>
   /**
-   * Add a member or replace their role (idempotent). The last-admin guard is atomic: demoting the
-   * only admin answers `last-admin` and changes nothing. `not-found` for an unknown team or user.
+   * Add a member or replace their role (idempotent). The role must be a team role of the app.
+   * The last-owner guard is atomic: demoting the only owner answers `last-admin` and changes
+   * nothing. `not-found` for an unknown team or user.
    *
    * @example
    * await auth.system.setMember({ teamId: acme.id, userId: bob.id, role: 'member' })
@@ -98,7 +101,7 @@ export interface SystemService {
     readonly role: unknown
   }): Promise<MembershipOutcome>
   /**
-   * Remove a membership (`ok` when it is gone, also when there was none). The only admin cannot
+   * Remove a membership (`ok` when it is gone, also when there was none). The only owner cannot
    * be removed (`last-admin`).
    *
    * @example
@@ -122,13 +125,15 @@ const invalid = (field: string): AuthError =>
 
 /** Build the {@link SystemService}. */
 export function systemService(deps: AuthDeps): SystemService {
-  const parseRole = (role: unknown, field: string): string => {
-    if (typeof role !== 'string' || !deps.config.roles.includes(role)) throw invalid(field)
+  /** A global role (platform) or a team role, from the configured lists only. */
+  const parseRole = (role: unknown, field: string, scope: 'global' | 'team'): string => {
+    const allowed = scope === 'global' ? deps.config.roles : deps.config.tenantRoles
+    if (typeof role !== 'string' || !allowed.includes(role)) throw invalid(field)
     return role
   }
 
   const setRoles = async (userId: string, roles: readonly string[]): Promise<void> => {
-    const wanted = [...new Set(roles.map((r) => parseRole(r, 'roles')))]
+    const wanted = [...new Set(roles.map((r) => parseRole(r, 'roles', 'global')))]
     const before = new Set(await deps.store.listUserRoles(userId))
     await deps.store.setUserRoles(userId, wanted)
     for (const role of wanted)
@@ -151,7 +156,7 @@ export function systemService(deps: AuthDeps): SystemService {
               onUnknown: deps.passwordCheckOnUnknown,
               logger: deps.logger,
             })
-      for (const role of input.roles ?? []) parseRole(role, 'roles')
+      for (const role of input.roles ?? []) parseRole(role, 'roles', 'global')
       const now = deps.clock.now()
       const created = await deps.store.createUser({
         id: newId(),
@@ -196,7 +201,7 @@ export function systemService(deps: AuthDeps): SystemService {
         !(await deps.store.createTeam(team, {
           teamId: team.id,
           userId: input.ownerId,
-          role: 'admin',
+          role: TEAM_OWNER_ROLE,
         }))
       )
         throw new AuthError('validation_failed', { issues: [{ field: 'slug', code: 'taken' }] })
@@ -215,7 +220,7 @@ export function systemService(deps: AuthDeps): SystemService {
     },
 
     async setMember(input) {
-      const role = parseRole(input.role, 'role')
+      const role = parseRole(input.role, 'role', 'team')
       const [team, user] = await Promise.all([
         deps.store.findTeam(input.teamId),
         deps.store.findUserById(input.userId),

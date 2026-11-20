@@ -30,6 +30,7 @@
  *
  * @module
  */
+import { TEAM_OWNER_ROLE } from '../config.ts'
 import type { Clock } from '../ports/clock.ts'
 import { systemClock } from '../ports/clock.ts'
 import type { CounterStore } from '../ports/counter-store.ts'
@@ -740,8 +741,8 @@ export function postgresAuthStore(db: PostgresClient): AuthStore {
         // demoting each other would each still see the other as admin (CONSISTENCY #117).
         const team = await tx.query('SELECT 1 FROM teams WHERE id = $1 FOR UPDATE', [teamId])
         if (team.rows.length === 0) return 'not-found'
-        const keepsAdmin = `(role <> 'admin' OR EXISTS (SELECT 1 FROM team_members o
-          WHERE o.team_id = $1 AND o.user_id <> $2 AND o.role = 'admin'))`
+        const keepsAdmin = `(role <> '${TEAM_OWNER_ROLE}' OR EXISTS (SELECT 1 FROM team_members o
+          WHERE o.team_id = $1 AND o.user_id <> $2 AND o.role = '${TEAM_OWNER_ROLE}'))`
         const changed =
           role === null
             ? await tx.query(
@@ -750,7 +751,7 @@ export function postgresAuthStore(db: PostgresClient): AuthStore {
               )
             : await tx.query(
                 `UPDATE team_members SET role = $3 WHERE team_id = $1 AND user_id = $2
-                 AND ($3 = 'admin' OR ${keepsAdmin}) RETURNING 1`,
+                 AND ($3 = '${TEAM_OWNER_ROLE}' OR ${keepsAdmin}) RETURNING 1`,
                 [teamId, userId, role],
               )
         if (changed.rows.length === 1) return 'ok'

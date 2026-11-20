@@ -12,6 +12,7 @@
  * @module
  */
 import type { DatabaseSync, SQLInputValue } from 'node:sqlite'
+import { TEAM_OWNER_ROLE } from '../config.ts'
 import type { Clock } from '../ports/clock.ts'
 import { systemClock } from '../ports/clock.ts'
 import type { CounterStore } from '../ports/counter-store.ts'
@@ -558,8 +559,8 @@ export function sqliteAuthStore(db: DatabaseSync): AuthStore {
     async changeMemberRole(teamId, userId, role) {
       // The "another admin remains" check is part of the write: SQLite runs the statement under the
       // database write lock, so two connections demoting each other cannot both pass it.
-      const keepsAdmin = `(role <> 'admin' OR EXISTS (SELECT 1 FROM team_members o
-        WHERE o.team_id = team_members.team_id AND o.user_id <> team_members.user_id AND o.role = 'admin'))`
+      const keepsAdmin = `(role <> '${TEAM_OWNER_ROLE}' OR EXISTS (SELECT 1 FROM team_members o
+        WHERE o.team_id = team_members.team_id AND o.user_id <> team_members.user_id AND o.role = '${TEAM_OWNER_ROLE}'))`
       const changed =
         role === null
           ? run(
@@ -568,7 +569,7 @@ export function sqliteAuthStore(db: DatabaseSync): AuthStore {
               userId,
             )
           : run(
-              `UPDATE team_members SET role = ? WHERE team_id = ? AND user_id = ? AND (? = 'admin' OR ${keepsAdmin})`,
+              `UPDATE team_members SET role = ? WHERE team_id = ? AND user_id = ? AND (? = '${TEAM_OWNER_ROLE}' OR ${keepsAdmin})`,
               role,
               teamId,
               userId,
