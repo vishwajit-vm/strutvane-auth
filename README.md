@@ -69,7 +69,9 @@ const where = compileToSql(filter, invoice, { alias: 'i' })
 await pool.query(`SELECT * FROM invoices i WHERE ${where.sql} LIMIT 50`, where.params)
 ```
 
-`row.amout` or `row.amount.eq('x')` don't compile, and every condition is validated against the schema when the policy is defined, so mistakes surface at boot. The in-memory check and the SQL select exactly the same rows: property-based tests compare them against real Postgres.
+`row.amout` or `row.amount.eq('x')` don't compile, and every condition is validated against the schema when the policy is defined, so mistakes surface at boot.
+
+**Integer keys.** Generated tables and the skeleton's `users` have integer ids (`t.id()`), so `actor.id` (a string) also compares with `int4` columns: `row.ownerId.eq(actor.id)` on an `int4` `ownerId` binds the id as the integer it spells. An id that is not a canonical integer in range (`'042'`, `'4.2'`, a uuid) matches no row, in memory and in SQL (`actorIdFor`). `actor.tenantId` and `actor.attrs.*` keep their exact types. The in-memory check and the SQL select exactly the same rows: property-based tests compare them against real Postgres.
 
 ## Roles: the role map
 
@@ -92,7 +94,7 @@ const permissions = createPermissionProvider([invoicePolicy], { roles })
 ```
 
 - `'<resource>.<action>'` patterns, with `*` for either part, are allows for actors holding the role.
-- `{ action, own: true }` only covers records whose `ownerId` is the actor's id. It compiles to SQL, so lists stay filtered, and it never matches on a model without a text/uuid `ownerId` field.
+- `{ action, own: true }` only covers records whose `ownerId` is the actor's id. It compiles to SQL, so lists stay filtered, and it never matches on a model without a text, uuid or int4 `ownerId` field.
 - `allowed = (policy allows OR role grants) AND NOT policy denies`: a policy `deny` always wins.
 - Wildcards never match `wildcardExclude` resources (grant those by exact name), and inside a tenant they only reach models with a `tenantId` column, so a tenant role can never touch platform-wide data through a pattern.
 - `scope: 'global'` grants count only outside tenants (platform admins); `'tenant'` only inside one.
@@ -196,7 +198,12 @@ Per-IP rate limits need the socket peer address (`attachRequestMeta`, done by th
 
 ## In a Strutvane app
 
-`create-strutvane` registers `@strutvane/auth/provider` in `strutvane.config.ts`. It connects to the app only through the framework kernel (container tokens, hooks, events), never by importing another product package:
+The app lists the provider in `bootstrap/providers.ts` (`import auth from '@strutvane/auth/provider'`, then `auth` in the list). An app created with sign-in has it already (the skeleton writes it); for any other app run `node strut install:auth`: it registers the provider, copies the migrations and writes `config/auth.ts` when there is none, and running it again changes nothing. With a framework older than 0.2.0-next.2 (no app patcher) it prints the two lines to add instead of editing the file. Then `node strut migrate`.
+
+The provider connects to the app only through the framework kernel (container tokens, hooks, events), never by importing another product package:
+
+- **URLs:** the auth endpoints live under the API base, `/api/v1/auth/*` (`config/api.ts` `prefix` + `version`; a prefix that already ends in a version is used as it is). The UI calls `{apiUrl}/auth/*` with `VITE_API_URL=/api/v1`.
+- **Policies:** `app/policies/*.policy.ts` may hold both styles. Framework policies (a class with `viewAny`, `view`, `create`, `update`, `delete`, `before`: what the skeleton and `make:migration` write) belong to the framework's gate and `ResourceController`; auth leaves them alone. `definePolicy(...)` files are auth's: compiled to SQL for lists and checked in memory for one record. Any other export fails the boot with `invalid_policy_file` and the fix.
 
 - **Engine and store:** the native engine on the app's database. On PostgreSQL it uses the framework's `Database` (`DatabaseToken`), so there is one pool. On SQLite it uses the same database file. It needs `APP_KEY` and the migrated tables, and boot fails with the fix named when either is missing. Use `session: { driver: 'memory' }` for development and tests. MySQL and MariaDB wait for their store: until then sign-in keeps its sessions in memory, with a warning (the migrations and `createFirstAdmin` already run there). `config/database.ts` may use the skeleton's flat shape (`default: 'pgsql' | 'sqlite' | …`, `database` = the SQLite file).
 - **One cookie-name source (#105):** in `register()` the provider binds `SessionCookieToken` from `config/session.ts` `cookie` (default `strutvane_session`, `__Host-` on https). The engine names its session cookie from that same value, and the framework's CSRF check reads the token. A token bound elsewhere is followed, and a name the engine can't set fails the boot.
@@ -242,7 +249,7 @@ Per-IP rate limits need the socket peer address (`attachRequestMeta`, done by th
     await idp.close()
   }
   ```
-- **Commands:** `auth:migration` (copies the migrations), `auth:user:create --email --name --password-env VAR` (the password comes from that environment variable, never a flag), `tenant:create --name --slug --owner <email>` and `tenant:member:add --tenant <slug> --email --role`.
+- **Commands:** `install:auth` (registers the provider, copies the migrations, writes `config/auth.ts` if missing), `auth:migration` (copies the migrations), `auth:user:create --email --name --password-env VAR` (the password comes from that environment variable, never a flag), `tenant:create --name --slug --owner <email>` and `tenant:member:add --tenant <slug> --email --role`.
 
 ## Migrating from v1 (Better Auth → native)
 
