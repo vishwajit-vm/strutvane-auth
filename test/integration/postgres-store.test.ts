@@ -60,14 +60,14 @@ async function teamWithTwoAdmins(id: string): Promise<void> {
   expect(
     await store.createTeam(
       { id, name: id, slug: null, personal: false, createdAt: START },
-      { teamId: id, userId: `${id}-a`, role: 'admin' },
+      { teamId: id, userId: `${id}-a`, role: 'owner' },
     ),
   ).toBe(true)
-  await store.putMember({ teamId: id, userId: `${id}-b`, role: 'admin' })
+  await store.putMember({ teamId: id, userId: `${id}-b`, role: 'owner' })
 }
 
 const admins = async (teamId: string) =>
-  (await store.listMembers(teamId)).filter((m) => m.role === 'admin').length
+  (await store.listMembers(teamId)).filter((m) => m.role === 'owner').length
 
 describe('PostgreSQL store on a real server: races (#117)', () => {
   it('last-admin guard: a change that waits on another instance sees its commit', async () => {
@@ -131,7 +131,7 @@ describe('PostgreSQL store on a real server: races (#117)', () => {
 
     await store.createTeam(
       { id: 't-inv', name: 'Inv', slug: 'inv', personal: false, createdAt: START },
-      { teamId: 't-inv', userId: 'u-race', role: 'admin' },
+      { teamId: 't-inv', userId: 'u-race', role: 'owner' },
     )
     await store.addInvitation({
       id: 'inv-1',

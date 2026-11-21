@@ -35,8 +35,8 @@ const authConfig = {
   seedAdmin: { email: 'admin@app.test', password: ADMIN_PASSWORD, role: 'admin' },
   roles: {
     admin: { permissions: ['*'] },
-    member: { permissions: ['*.viewAny'] },
-    viewer: { permissions: ['*.viewAny'] },
+    member: { scope: 'tenant', permissions: ['*.viewAny'] },
+    viewer: { scope: 'tenant', permissions: ['*.viewAny'] },
     owner: { scope: 'tenant', permissions: ['*'] },
   },
 }
@@ -205,7 +205,7 @@ describe('persistent identity in the app provider', () => {
       await idp.setMember({ tenant: 'acme', email: 'vic@acme.test', role: 'viewer' })
       await expect(
         idp.setMember({ tenant: 'acme', email: 'vic@acme.test', role: 'superuser' }),
-      ).rejects.toThrow(/not defined/)
+      ).rejects.toThrow(/not a tenant role/)
       await expect(
         idp.setMember({ tenant: 'nope', email: 'vic@acme.test', role: 'viewer' }),
       ).rejects.toThrow(/no tenant/)
@@ -260,7 +260,7 @@ describe('persistent identity in the app provider', () => {
       ).data
       expect(roster.map((m) => `${m.email}:${m.roles.join()}`).sort()).toEqual([
         'mia@acme.test:member',
-        'olivia@acme.test:admin',
+        'olivia@acme.test:owner',
         'vic@acme.test:viewer',
       ])
       // A viewer (and an outsider using a forged tenant id) gets the same 403 as an unknown tenant.
