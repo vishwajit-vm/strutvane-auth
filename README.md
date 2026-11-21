@@ -80,9 +80,12 @@ import { compileRoleMap, createPermissionProvider } from '@strutvane/auth'
 
 const roles = compileRoleMap({
   roles: {
-    admin: { permissions: ['*', { action: 'user.update', scope: 'global' }] },
-    member: { permissions: ['*.viewAny', '*.view', '*.create', { action: '*.update', own: true }] },
-    viewer: { permissions: ['*.viewAny', '*.view'] },
+    admin: { permissions: ['*', 'user.update'] }, // the platform administrator
+    member: {
+      scope: 'tenant',
+      permissions: ['*.viewAny', '*.view', '*.create', { action: '*.update', own: true }],
+    },
+    viewer: { scope: 'any', permissions: ['*.viewAny', '*.view'] },
     owner: { scope: 'tenant', permissions: ['*'] }, // a tenant's creator
   },
   wildcardExclude: ['user', 'session', 'role', 'membership', 'auditEvent'],
@@ -95,7 +98,7 @@ const permissions = createPermissionProvider([invoicePolicy], { roles })
 - `{ action, own: true }` only covers records whose `ownerId` is the actor's id. It compiles to SQL, so lists stay filtered, and it never matches on a model without a text/uuid `ownerId` field.
 - `allowed = (policy allows OR role grants) AND NOT policy denies`: a policy `deny` always wins.
 - Wildcards never match `wildcardExclude` resources (grant those by exact name), and inside a tenant they only reach models with a `tenantId` column, so a tenant role can never touch platform-wide data through a pattern.
-- `scope: 'global'` grants count only outside tenants (platform admins); `'tenant'` only inside one.
+- **Platform roles and tenant roles are separate.** A role without a `scope` (or `scope: 'global'`) is a platform role: its grants count only outside tenants and it is never given inside one. `'tenant'` roles are what tenant members hold. `'any'` roles live in both places; inside a tenant their grants (exact names included) reach only models with a `tenantId` column. `owner` is reserved for the tenant creator (always `'tenant'`) and `admin` for the platform (always `'global'`); a permission's own `scope` may narrow an `'any'` role, never widen a role.
 - `newModelDefaults: 'admin-only'` limits models nobody names to the full `'*'` grant (partial patterns such as `'*.view'` are then a boot error).
 - No roles configured: exactly the policies, deny by default. Every mistake (unknown option, malformed pattern, `own` typo) fails at boot.
 
@@ -138,7 +141,7 @@ The default identity engine is Strutvane's own ([ADR-0023](https://github.com/vi
 | `twoFactor` | off | TOTP (RFC 6238) with 8–10 recovery codes, replay protection, "remember this device" |
 | `passkeys` | off | WebAuthn: passwordless sign-in, second factor, several per user |
 | `apiTokens` | off | Personal access tokens (`svp_…`, shown once, keyed digest, abilities, expiry) |
-| `teams` | off (on with tenancy) | Teams as tenants: invitations, roles, last-admin guard, switching rotates the session |
+| `teams` | off (on with tenancy; its routes exist only with tenancy) | Teams as tenants: invitations, tenant roles, last-owner guard, switching rotates the session |
 | `impersonation` | off | Global `admin` only, after confirmation, never another admin, audited with actor and subject |
 
 A switched-off feature has no routes (the same 404 as an unknown path) and its services refuse too. Every secret (session ids, reset and email-link tokens, recovery codes, PATs, invitations) is stored only as an HMAC under `APP_KEY`. Cookies are `__Host-` on https. Error codes are lowercase `snake_case`, and field issues are `{ path, field, code, message }`.
@@ -200,7 +203,7 @@ Per-IP rate limits need the socket peer address (`attachRequestMeta`, done by th
 
 - **Engine and store:** the native engine on the app's database. On PostgreSQL it uses the framework's `Database` (`DatabaseToken`), so there is one pool. On SQLite it uses the same database file. It needs `APP_KEY` and the migrated tables, and boot fails with the fix named when either is missing. Use `session: { driver: 'memory' }` for development and tests. MySQL and MariaDB wait for their store: until then sign-in keeps its sessions in memory, with a warning (the migrations and `createFirstAdmin` already run there). `config/database.ts` may use the skeleton's flat shape (`default: 'pgsql' | 'sqlite' | …`, `database` = the SQLite file).
 - **One cookie-name source (#105):** in `register()` the provider binds `SessionCookieToken` from `config/session.ts` `cookie` (default `strutvane_session`, `__Host-` on https). The engine names its session cookie from that same value, and the framework's CSRF check reads the token. A token bound elsewhere is followed, and a name the engine can't set fails the boot.
-- **Permissions:** loads `app/policies/*.policy.ts` at boot, combines them with the role map of `config/auth.ts` (`roles`, `wildcardExclude`, `newModelDefaults`; see "Roles") and binds `PermissionProviderToken` (deny-by-default). Role names come from the role map's keys (plus `admin`, the role that manages a team) or from `rolePreset` (`admin-member`, `admin-manager-member-viewer`).
+- **Permissions:** loads `app/policies/*.policy.ts` at boot, combines them with the role map of `config/auth.ts` (`roles`, `wildcardExclude`, `newModelDefaults`; see "Roles") and binds `PermissionProviderToken` (deny-by-default). Platform role names are the role map's platform roles (plus `admin`), tenant role names its tenant roles (plus `owner`, the role that manages a team); without a role map, `rolePreset` (`admin-member`, `admin-manager-member-viewer`) gives the platform roles and `owner` plus the preset's other roles as tenant roles.
 - **Field rules:** `field('amount').readable({ role })` and `.writable({ role })` are enforced on every API record through the framework's `resource.serialize` and `resource.beforeWrite` hooks; filters, sorts and search on unreadable fields are refused through `filterableFields`.
 - **Identity on every request:** an `http.onRequest` hook (`auth.identity`) resolves the actor (and, with `config/tenancy.ts` `enabled: true`, the tenant from the session). `X-Tenant-Id` is honoured only for tenant-less service actors. The hook's `clientAddress` keys the per-IP limits; set `auth.trustedProxies` behind a reverse proxy.
 - **Routes** under `{api}/auth` (by default `/api/v1/auth`):
@@ -208,7 +211,7 @@ Per-IP rate limits need the socket peer address (`attachRequestMeta`, done by th
   - the v1 endpoints, kept so existing clients keep working: `POST /sign-up` (only with `registration`), `/sign-in`, `/sign-out`, `GET /me`, and with tenancy `POST|GET /tenants`, `POST /switch-tenant` and the member endpoints `GET|POST /tenants/:id/members`, `DELETE /tenants/:id/members/:userId`.
 
   Unsafe requests must come from the app's own origin (on top of the framework's CSRF check), bodies must be `application/json` and are cut off at 16 KiB, and failures are RFC 9457 problems.
-- **Tenants are teams.** A tenant's creator is its `admin`, held inside that tenant only. The last admin can be neither removed nor demoted: the guard is one atomic store operation.
+- **Tenants are teams.** A tenant's creator is its `owner`, held inside that tenant only (`owner` is never a platform role, and `admin` never a tenant role). The last owner can be neither removed nor demoted: the guard is one atomic store operation. Teams created before 0.2.0-next.2 held `admin`; a persistent store moves them to `owner` on boot.
 - **Seed admin:** the `seedAdmin` account is created once at boot, and its role (`seedAdmin.role`, default `admin`) is stored with the account (`user_roles`). Self-registered users get `defaultRoles`.
 - **Mail:** bind a mailer under `AuthMailerToken` (`{ send(mail) }`). Without one, mails are dropped with a warning that names only the mail kind, never the link.
 - **Domain events** on the framework event bus: `auth.user.registered`, `auth.login.succeeded`, `auth.login.failed`, `auth.lockout`, `auth.logout`, `auth.password.changed`, `auth.email.verified`, `auth.two_factor.enabled|disabled`, `auth.passkey.added|removed`, `auth.token.created|revoked`, `auth.session.revoked`, `auth.role.assigned`, `auth.impersonation.started|stopped`, and `tenant.created`, `tenant.switched`, `tenant.invitation.created|accepted`, `tenant.member.changed` (`AUTH_DOMAIN_EVENTS`). Payloads carry ids and enums only, with no IP address. The actor is the user (or the impersonating admin), and `tenant.*` events carry the tenant.
@@ -253,7 +256,7 @@ To move an app:
 1. **Set `APP_KEY`** (`node strut key:generate`). `AUTH_SECRET` and `secret` are no longer used by the native engine.
 2. **Create the tables:** `node strut auth:migration` copies the two migrations into `database/migrations`, then `node strut migrate` runs them. They need the app's `users` table (the skeleton's migration). The Better Auth tables (`"user"`, `"session"`, `"organization"`, …) are not touched; the v1 package migration now lives in `migrations-better-auth/`.
 3. **Move the accounts.** Password hashes are not carried over automatically (no `LegacyVerifier` for Better Auth's scrypt format ships), so every user sets a new password through `forgot-password`. Create the accounts with `openIdentityAdmin().ensureUser` or `auth:user:create`, and teams with `ensureTenant` / `setMember`.
-4. **Roles:** a tenant's creator is now `admin` (was `owner`). Rename `owner` to `admin` in your role map and policies, or keep both.
+4. **Roles:** a tenant's creator is `owner`, as in v1. Give your tenant roles `scope: 'tenant'` in the role map: roles without a scope are platform roles.
 5. **Codes:** every code is lowercase `snake_case`, as in `@strutvane/framework` 0.2 (CONSISTENCY #123). Identity errors: `invalid_credentials`, `validation_failed`, …, and two are new: `two_factor_required` and `email_not_verified`. Problems from the provider and middleware: `forbidden`, `not_found`, `tenant_required`, `malformed_request`, `unsupported_media_type`, `payload_too_large`, and `invalid_filter` for a filter that fails validation (`InvalidFilterError`). Findings from `tenancyAudit`, `findSessionSet` and `relationKeyAudit` too: `rls_disabled`, `rls_not_forced`, `no_restrictive_policy`, `runtime_role_bypasses_rls`, `runtime_role_owns_table`, `definer_view`, `security_definer_function`, `tenant_setting_default`, `session_set`, `session_set_config`, `set_local`, `persistent_set`, `session_reset`, `relation_table_missing`, `relation_key_not_unique`. Update any client or CI script that compares the old uppercase names. Field issues carry `field`, the dotted path (`members.2.email`), next to `path`.
 6. **Cookies:** the session cookie is `strutvane_session` (`__Host-strutvane_session` on https). Everyone signs in again once.
 7. **Features:** switch sign-in options on in `config/auth.ts` `features`. Public `registration` stays off unless it is `true`.
@@ -266,7 +269,7 @@ To move an app:
 - **NULL-safe, two-valued semantics (ADR-0008).** `ne` matches rows with no value, so `deny … when status ne 'draft'` also protects rows without a status. A null actor attribute never matches null rows, and in allow rules it never widens access either: under `ne`, `nin` or `not` the condition part binds to "no match".
 - **Records must be well-typed.** A loaded value that doesn't fit its column type (a `bigint` read as a string, `0`/`1` for a boolean, a non-canonical uuid) makes `can()` throw instead of guessing.
 - **Hidden fields stay hidden.** `maskRecord` copies only readable schema fields. Validate untrusted filters and sorts with `validateFilter(filter, schema, { allowedFields: policy.filterableFields(actor) })`, so a field the actor can't read can't be probed one comparison at a time. Pass `maskFor: policy` to `diffChanges` / `recordAudit` to redact those fields in audit diffs.
-- **Role lists are explicit.** `role: []` is a definition error, never "everyone". Use `scope: 'global'` on platform-admin rules so a tenant's own `admin` role can't match them (`'tenant'` for the reverse).
+- **Role lists are explicit.** `role: []` is a definition error, never "everyone". A tenant member's roles match only tenant grants, so a grant written for a platform role never reaches someone who created their own tenant.
 - **Text compares bytewise in SQL** (`COLLATE "C"`), so case- or accent-insensitive column collations can't make SQL disagree with in-memory checks. Build indexes used by policy filters `COLLATE "C"`, or set `textCollation: 'database'` if every text column is deterministic.
 - **No value ever reaches SQL text.** Values are typed parameters, identifiers come only from the schema and are pattern-checked, and text search never uses `LIKE`.
 - **Untrusted filters are bounded**: node count, depth, list length and string length are capped before any work is done.

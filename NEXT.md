@@ -1,7 +1,23 @@
-# NEXT: `v2/native-engine` (@strutvane/auth 0.2 core train)
+# NEXT: `fix/hardening-2026-11-20` (@strutvane/auth, after 0.2.0-next.1)
 
 Branch progress for the next session (HANDOFF §2 rule 5). Status of the whole ecosystem is in the hub's `STATE.md`.
 
+## Done (2026-11-21): features off unless set; tenant roles apart from platform roles
+
+- **Features.** `resolveFeatures` (identity/engine-config.ts) gives the engine a complete, explicit feature set: registration only when `registration: true` (top level or `features`), teams only with tenancy or `features.teams: true`, everything else off unless set. `createNativeEngine` adds no defaults. The provider builds the engine handler with `withoutFeatures: ['teams']` when tenancy is off. Tests: `test/feature-defaults.test.ts` (every off route is byte-identical to the unknown-path 404 for `{}`, a role map, one feature, teams without tenancy; property test over feature subsets).
+- **Tenant roles.** The team creator is `owner` (reserved, tenant only); `admin` is platform only. Role map roles default to scope `'global'`; `partitionRoles` splits a map into platform and tenant roles; `any` grants inside a tenant reach only resources with `tenantId`; a permission may not widen its role's scope (boot error). The engine has `config.tenantRoles`; invitations, `setMember`, `POST /tenants/:id/members` and the admin API accept only tenant roles; `createFirstAdmin` refuses `owner`. Tests: `test/tenant-roles.test.ts` (property test over random role maps; store rename on memory, SQLite, PGlite; boot move on a SQLite file), `test/app-provider.test.ts` (sign up → create tenant → the grants written for `admin` are refused; `admin` cannot be added as a member), `test/roles.test.ts` (new boot errors).
+- **Data move.** The framework's v2 migrations are Schema-builder only (no data statements), so the `admin` → `owner` move is `AuthStore.renameTeamRole`, run idempotently on every boot of a persistent store (`app-identity.ts` `upgradeTeamRoles`), not a migration file.
+- Changeset: `.changeset/explicit-features-tenant-roles.md` (minor, pre `next`).
+
+## Not done / waiting
+
+- Remaining hardening items: see the coordinator.
+- **Generated apps:** the skeleton / create-strutvane `config/auth.ts` role maps must give their tenant roles `scope: 'tenant'` (roles without a scope are platform roles now), and apps that built `createNativeEngine` themselves must pass `features`.
+- Docs (README / docs site) for the role scopes and the `owner` role.
+- Not pushed (the coordinator pushes).
+
+
+## Earlier (v2/native-engine, 2026-11-19)
 ## Done (2026-11-19): ready to stage 0.2.0-next.1
 
 - **Version 0.2.0-next.1** (`changeset version`, pre mode `next`). Dev dependency `@strutvane/framework` `0.2.0-next.1` from npm (the lockfile has its integrity); the peer stays `^0.2.0-next.0`. Plain `npm ci` passes (the pinned `allowScripts` were already in place).

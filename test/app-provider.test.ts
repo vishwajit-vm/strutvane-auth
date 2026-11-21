@@ -528,7 +528,8 @@ describe('role map from config/auth.ts', () => {
       cookie: cookieOf(signUp.response),
     })
     expect(created.response?.status).toBe(201)
-    const { tenantId } = (await created.response?.json()) as { tenantId: string }
+    const tenant = (await created.response?.json()) as { tenantId: string }
+    const tenantId = tenant.tenantId
     const ownerCookie = cookieOf(created.response)
     // Every request of the tenant creator resolves to `owner` in that tenant.
     const request = await send('GET', '/api/v1/customers', { cookie: ownerCookie })
