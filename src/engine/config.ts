@@ -322,8 +322,11 @@ const ROLE_NAME = /^[a-z][a-z0-9_-]{0,63}$/
 /** A checked list of role names (lowercase, no duplicates). */
 function roleList(name: string, roles: unknown): readonly string[] {
   if (!Array.isArray(roles) || roles.some((r) => typeof r !== 'string' || !ROLE_NAME.test(r)))
-    throw new TypeError(`auth config: ${name} must be lowercase names like \`admin\` or \`team-lead\``)
-  if (new Set(roles).size !== roles.length) throw new TypeError(`auth config: ${name} has duplicates`)
+    throw new TypeError(
+      `auth config: ${name} must be lowercase names like \`admin\` or \`team-lead\``,
+    )
+  if (new Set(roles).size !== roles.length)
+    throw new TypeError(`auth config: ${name} has duplicates`)
   return Object.freeze([...(roles as string[])])
 }
 

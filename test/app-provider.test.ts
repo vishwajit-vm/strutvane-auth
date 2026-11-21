@@ -241,7 +241,7 @@ describe('@strutvane/auth/provider', () => {
     })
     expect(created.response?.status).toBe(201)
     const tenant = (await created.response?.json()) as { tenantId: string; roles: string[] }
-    expect(tenant.roles).toEqual(['admin'])
+    expect(tenant.roles).toEqual(['owner'])
     // Creating a tenant changes privileges, so the session token rotates.
     const ownerCookie = cookieOf(created.response)
     expect(ownerCookie).toMatch(/^strutvane_session=/)
@@ -260,13 +260,13 @@ describe('@strutvane/auth/provider', () => {
       body: JSON.stringify({ tenantId: tenant.tenantId }),
     })
     expect(await switched.response?.json()).toMatchObject({
-      actor: { tenantId: tenant.tenantId, roles: ['admin'] },
+      actor: { tenantId: tenant.tenantId, roles: ['owner'] },
     })
     // Switching rotates the session (fixation defence): use the new cookie.
     const rotated = cookieOf(switched.response) || ownerCookie
     const scoped = await send('GET', '/api/v1/invoices', { cookie: rotated })
     expect(scoped.tenant?.id).toBe(tenant.tenantId)
-    expect(scoped.actor?.roles).toEqual(['admin'])
+    expect(scoped.actor?.roles).toEqual(['owner'])
     const foreign = await send('POST', '/api/v1/auth/switch-tenant', {
       cookie: rotated,
       body: JSON.stringify({ tenantId: '0190a000-0000-7000-8000-00000000000c' }),
@@ -503,14 +503,16 @@ describe('role map from config/auth.ts', () => {
     expect((await permissions.can(admin, 'customer.viewAny')).reason).toBe('default-deny:no-policy')
   })
 
-  test('a tenant creator holds admin (the team role), which a tenant-scoped role map grants inside that tenant only', async () => {
-    // The native engine's tenant creator is the team's `admin`; here the map scopes it to tenants.
-    const tenantRoles = {
-      admin: { scope: 'tenant', permissions: ['*', 'customer.viewAny'] },
-      member: { permissions: ['*.viewAny', '*.view'] },
+  test('a self-made tenant owner never gets a grant written for the platform admin', async () => {
+    // `admin` has exact grants (the platform administrator); `owner` runs a tenant; `member` is a
+    // tenant role. Anyone may sign up and create a tenant, so its creator must hold `owner` only.
+    const roles = {
+      admin: { permissions: ['customer.viewAny', 'customer.delete'] },
+      owner: { scope: 'tenant', permissions: ['*', 'customer.view'] },
+      member: { scope: 'tenant', permissions: ['*.viewAny'] },
     } as const
     const { app, send } = await boot({
-      auth: { roles: tenantRoles },
+      auth: { roles },
       tenancy: { enabled: true, strategy: 'shared' },
     })
     const signUp = await send('POST', '/api/v1/auth/sign-up', {
@@ -520,28 +522,41 @@ describe('role map from config/auth.ts', () => {
         name: 'F',
       }),
     })
-    const cookie = cookieOf(signUp.response)
+    expect(signUp.response?.status).toBe(201)
     const created = await send('POST', '/api/v1/auth/tenants', {
       body: JSON.stringify({ name: 'Acme', slug: 'acme' }),
-      cookie,
+      cookie: cookieOf(signUp.response),
     })
     expect(created.response?.status).toBe(201)
-    const tenant = (await created.response?.json()) as { tenantId: string }
-    const tenantId = tenant.tenantId
-    const switched = await send('POST', '/api/v1/auth/switch-tenant', {
-      body: JSON.stringify({ tenantId }),
-      cookie: cookieOf(created.response),
-    })
-    const body = (await switched.response?.json()) as { actor: Actor }
-    const actor = body.actor
-    expect(actor).toMatchObject({ roles: ['admin'], tenantId })
+    const { tenantId } = (await created.response?.json()) as { tenantId: string }
+    const ownerCookie = cookieOf(created.response)
+    // Every request of the tenant creator resolves to `owner` in that tenant.
+    const request = await send('GET', '/api/v1/customers', { cookie: ownerCookie })
+    expect(request.actor).toMatchObject({ roles: ['owner'], tenantId })
+    const actor = request.actor as Actor
     const permissions = app.make(PermissionProviderToken)
-    const full: Actor = { ...actor, attrs: {} }
-    // An exact grant is deliberate: it counts inside the tenant, and never outside (scope tenant).
-    // (invoice is left out: the fixture's invoice policy has its own rule for `admin`.)
-    expect((await permissions.can(full, 'customer.viewAny')).allowed).toBe(true)
-    const { tenantId: _t, ...outside } = full
-    expect((await permissions.can(outside, 'customer.viewAny')).allowed).toBe(false)
+    // The grants written for `admin` (exact names) refuse the tenant owner: the endpoint answers 403.
+    for (const permission of ['customer.viewAny', 'customer.delete'] as const)
+      expect((await permissions.can(actor, permission)).allowed, permission).toBe(false)
+    // Its own tenant-scoped exact grant does count inside the tenant, and never outside it.
+    expect((await permissions.can(actor, 'customer.view')).allowed).toBe(true)
+    const { tenantId: _t, ...outside } = actor
+    expect((await permissions.can(outside, 'customer.view')).allowed).toBe(false)
+    // The platform admin (seeded, no tenant) keeps the exact grant.
+    const admin: Actor = { id: 'a', type: 'user', roles: ['admin'], attrs: {} }
+    expect((await permissions.can(admin, 'customer.viewAny')).allowed).toBe(true)
+    // A platform role can never be handed out inside the tenant.
+    const members = `/api/v1/auth/tenants/${tenantId}/members`
+    const asAdmin = await send('POST', members, {
+      cookie: ownerCookie,
+      body: JSON.stringify({ email: 'admin@app.test', role: 'admin' }),
+    })
+    expect(asAdmin.response?.status).toBe(422)
+    const asMember = await send('POST', members, {
+      cookie: ownerCookie,
+      body: JSON.stringify({ email: 'admin@app.test', role: 'member' }),
+    })
+    expect(asMember.response?.status).toBe(201)
   })
 
   test.each([

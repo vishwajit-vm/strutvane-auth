@@ -25,6 +25,7 @@
  */
 import { randomBytes } from 'node:crypto'
 import type { Connection } from '@strutvane/framework/database'
+import { TEAM_OWNER_ROLE } from './engine/config.ts'
 import { parseEmail } from './engine/password/email.ts'
 import { createScryptHasher, type PasswordHasher } from './engine/password/hasher.ts'
 import { commonPasswordCheck, passwordLength } from './engine/password/rules.ts'
@@ -163,6 +164,12 @@ export async function createFirstAdmin(
   const role = input.role ?? 'admin'
   if (!ROLE.test(role))
     throw new FirstAdminError('validation_failed', `"${role}" is not a role name (a-z, 0-9, _ -)`)
+  // `owner` is the reserved team role (anyone who creates a team holds it there): never global.
+  if (role === TEAM_OWNER_ROLE)
+    throw new FirstAdminError(
+      'validation_failed',
+      '"owner" is the team role and cannot be a global role; use "admin" or another platform role',
+    )
   const given = await checkedPassword(input.password)
   const oneTimePassword = given === undefined ? generatePassword() : undefined
   // Hash before the transaction: scrypt takes ~100 ms and must not hold the lock.

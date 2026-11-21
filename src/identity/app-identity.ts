@@ -243,10 +243,10 @@ const MIGRATIONS_HINT =
  * UPDATE of the rows that still say `admin`), so it runs on every boot of a persistent store; it
  * changes rows, never a table.
  */
-async function upgradeTeamRoles(store: AuthStore, logger: Logger): Promise<void> {
+async function upgradeTeamRoles(store: AuthStore, logger: Pick<Logger, 'warn'>): Promise<void> {
   const moved = await store.renameTeamRole(PLATFORM_ADMIN_ROLE, TEAM_OWNER_ROLE)
   if (moved > 0)
-    logger.info('auth: team memberships and invitations moved from the admin role to owner', {
+    logger.warn('auth: team memberships and invitations moved from the admin role to owner', {
       rows: moved,
     })
 }

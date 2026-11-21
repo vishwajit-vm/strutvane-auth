@@ -159,8 +159,7 @@ describe.each(STORES)('teams (%s store)', (store) => {
       'validation_failed',
     )
     await rejectsWith(
-      () =>
-        h.auth.teams.changeRole(ada.req, { teamId: team.id, userId: 'x', role: 'admin' }),
+      () => h.auth.teams.changeRole(ada.req, { teamId: team.id, userId: 'x', role: 'admin' }),
       'validation_failed',
     )
     await rejectsWith(

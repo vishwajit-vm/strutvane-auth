@@ -45,6 +45,7 @@ import type {
   TenantInfo,
 } from './identity/engine.ts'
 import { engineConfigFrom } from './identity/engine-config.ts'
+import { partitionRoles } from './policy/roles.ts'
 
 export { IdentitySetupError } from './identity/app-identity.ts'
 
@@ -197,13 +198,14 @@ export async function openIdentityAdmin(
       return { tenantId: created.tenantId, name: created.name, slug: created.slug }
     },
     async setMember(input) {
+      // Tenant roles only: a platform role (no scope, or 'global') is never given inside a tenant.
       const roles = project.auth.roles
-        ? Object.keys(project.auth.roles)
+        ? partitionRoles(project.auth.roles).tenant
         : ['owner', 'member', 'viewer']
       if (!roles.includes(input.role))
         throw new IdentityAdminError(
           'validation_failed',
-          `role "${input.role}" is not defined in config/auth.ts (roles: ${roles.join(', ')})`,
+          `role "${input.role}" is not a tenant role in config/auth.ts (tenant roles: ${roles.join(', ')}; give a role scope: 'tenant' to use it in tenants)`,
         )
       const tenantId = await tenantOf(input.tenant)
       const user = await userByEmail(input.email)

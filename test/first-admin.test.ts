@@ -215,15 +215,15 @@ describe.each([
     const chosen = 'an unusual seeding passphrase 7'
     const admin = await createFirstAdmin(
       db.connection,
-      { email: 'a@acme.test', password: chosen, role: 'owner' },
+      { email: 'a@acme.test', password: chosen, role: 'manager' },
       { hasher },
     )
     expect(admin.oneTimePassword).toBeUndefined()
-    expect(admin.role).toBe('owner')
+    expect(admin.role).toBe('manager')
     const signedIn = await db
       .engine()
       .signIn({ email: 'a@acme.test', password: chosen }, browserRequest(URL_, { ip: freshIp() }))
-    expect(signedIn.ok ? signedIn.value.actor.roles : signedIn.error).toEqual(['owner'])
+    expect(signedIn.ok ? signedIn.value.actor.roles : signedIn.error).toEqual(['manager'])
   })
 
   it('validates the email, name and role before touching the database', async () => {
@@ -235,6 +235,7 @@ describe.each([
       { email: 'a@acme.test', name: 'x'.repeat(201) },
       { email: 'a@acme.test', role: 'Admin' },
       { email: 'a@acme.test', role: "admin'; DROP TABLE users; --" },
+      { email: 'a@acme.test', role: 'owner' },
     ])
       await refused(() => createFirstAdmin(db.connection, input, { hasher }), 'validation_failed')
     expect(await db.count('users')).toBe(0)

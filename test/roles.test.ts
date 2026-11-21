@@ -114,10 +114,26 @@ describe('compileRoleMap: definition errors fail the boot', () => {
       /scope/,
     ],
     ['bad newModelDefaults', { newModelDefaults: 'open' }, /newModelDefaults/],
-    ['owner as a platform role', { roles: { owner: { scope: 'global', permissions: [] } } }, /reserved tenant role/],
-    ['owner in both places', { roles: { owner: { scope: 'any', permissions: [] } } }, /reserved tenant role/],
-    ['admin as a tenant role', { roles: { admin: { scope: 'tenant', permissions: [] } } }, /platform role/],
-    ['admin in both places', { roles: { admin: { scope: 'any', permissions: [] } } }, /platform role/],
+    [
+      'owner as a platform role',
+      { roles: { owner: { scope: 'global', permissions: [] } } },
+      /reserved tenant role/,
+    ],
+    [
+      'owner in both places',
+      { roles: { owner: { scope: 'any', permissions: [] } } },
+      /reserved tenant role/,
+    ],
+    [
+      'admin as a tenant role',
+      { roles: { admin: { scope: 'tenant', permissions: [] } } },
+      /platform role/,
+    ],
+    [
+      'admin in both places',
+      { roles: { admin: { scope: 'any', permissions: [] } } },
+      /platform role/,
+    ],
     [
       'a platform role (no scope) with a tenant permission',
       { roles: { member: { permissions: [{ action: '*.view', scope: 'tenant' }] } } },
@@ -125,7 +141,11 @@ describe('compileRoleMap: definition errors fail the boot', () => {
     ],
     [
       'a tenant role with a platform permission',
-      { roles: { member: { scope: 'tenant', permissions: [{ action: '*.view', scope: 'global' }] } } },
+      {
+        roles: {
+          member: { scope: 'tenant', permissions: [{ action: '*.view', scope: 'global' }] },
+        },
+      },
       /never applies to member, a tenant role/,
     ],
     ['wildcardExclude not a list', { wildcardExclude: 'user' }, /wildcardExclude must be/],

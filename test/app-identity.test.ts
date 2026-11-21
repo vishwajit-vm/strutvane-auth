@@ -273,7 +273,8 @@ describe('createAppIdentity: which engine an app runs on', () => {
 describe('admin API and commands without a persistent store', () => {
   test('openIdentityAdmin refuses memory unless allowed; ensure* are idempotent', async () => {
     const root = await project({
-      'config/auth.ts': 'export default { roles: { owner: {}, member: {}, viewer: {} } }\n',
+      'config/auth.ts':
+        'export default { roles: { owner: {}, member: { scope: "tenant" }, viewer: { scope: "tenant" } } }\n',
     })
     await expect(openIdentityAdmin({ root })).rejects.toBeInstanceOf(IdentitySetupError)
     const idp = await openIdentityAdmin({ root, allowMemory: true })
@@ -433,8 +434,8 @@ describe('tenant member endpoints (native engine)', () => {
           registration: true,
           roles: {
             owner: { permissions: ['*'] },
-            member: { permissions: [] },
-            viewer: { permissions: [] },
+            member: { scope: 'tenant', permissions: [] },
+            viewer: { scope: 'tenant', permissions: [] },
           },
         },
         tenancy: { enabled: true },

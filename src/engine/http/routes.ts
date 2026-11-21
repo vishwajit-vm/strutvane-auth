@@ -403,6 +403,34 @@ function sameOrigin(request: Request, appUrl: string): boolean {
 }
 
 /** Options for {@link createAuthHandler}. */
+/** One engine route as data: what {@link listAuthRoutes} returns. */
+export interface AuthRouteInfo {
+  readonly method: Route['method']
+  /** The path pattern under the auth prefix (`:name` marks a parameter). */
+  readonly path: string
+  /** The feature that must be on for the route to exist (none: always there). */
+  readonly feature?: keyof AuthFeatures
+}
+
+/**
+ * Every route the engine can serve, whether or not its feature is on: for tooling and for tests
+ * that check a switched-off feature leaves no route behind.
+ *
+ * @example
+ * listAuthRoutes(auth).filter((r) => r.feature === 'teams').map((r) => r.path)
+ */
+export function listAuthRoutes(auth: Auth): readonly AuthRouteInfo[] {
+  return Object.freeze(
+    routes(auth).map((r) =>
+      Object.freeze({
+        method: r.method,
+        path: r.path,
+        ...(r.feature !== undefined ? { feature: r.feature } : {}),
+      }),
+    ),
+  )
+}
+
 export interface AuthHandlerOptions {
   /** Called for every unexpected (non-`AuthError`) failure, with the route path only. */
   readonly onError?: (route: string, error: unknown) => void

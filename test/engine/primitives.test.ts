@@ -424,7 +424,11 @@ describe('config', () => {
       defineAuthConfig({ appUrl: 'http://staging.acme.test', features: { emailLink: true } }),
     ).toThrow(/emailLink/)
     // Every sign-in method sets cookies: plain http outside local development is refused for each.
-    for (const features of [{}, { password: false, passkeys: true }, { password: false, emailLink: true }])
+    for (const features of [
+      {},
+      { password: false, passkeys: true },
+      { password: false, emailLink: true },
+    ])
       expect(
         () =>
           defineAuthConfig({
