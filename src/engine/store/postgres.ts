@@ -734,6 +734,21 @@ export function postgresAuthStore(db: PostgresClient): AuthStore {
         userId,
       ])
     },
+    async renameTeamRole(from, to) {
+      let changed = 0
+      await db.transaction(async (tx) => {
+        const members = await tx.query(
+          'UPDATE team_members SET role = $1 WHERE role = $2 RETURNING 1',
+          [to, from],
+        )
+        const invites = await tx.query(
+          'UPDATE team_invitations SET role = $1 WHERE role = $2 RETURNING 1',
+          [to, from],
+        )
+        changed = members.rows.length + invites.rows.length
+      })
+      return changed
+    },
     async changeMemberRole(teamId, userId, role) {
       return db.transaction(async (tx) => {
         // Serialise role changes per team: a second change waits here until the first commits,

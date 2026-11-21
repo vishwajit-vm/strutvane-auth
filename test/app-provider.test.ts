@@ -284,6 +284,7 @@ describe('@strutvane/auth/provider', () => {
 describe('native engine globalRoles', () => {
   test('applies outside tenants only and drops invalid role names (fail closed)', async () => {
     const engine = createNativeEngine({
+      config: { features: { registration: true, teams: true } },
       baseURL: 'http://localhost:3000',
       deliverPasswordReset: async () => {},
       scryptCost: 2 ** 14,

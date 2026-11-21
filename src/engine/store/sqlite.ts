@@ -556,6 +556,15 @@ export function sqliteAuthStore(db: DatabaseSync): AuthStore {
     async removeMember(teamId, userId) {
       run('DELETE FROM team_members WHERE team_id = ? AND user_id = ?', teamId, userId)
     },
+    async renameTeamRole(from, to) {
+      let changed = 0
+      tx(() => {
+        changed =
+          run('UPDATE team_members SET role = ? WHERE role = ?', to, from) +
+          run('UPDATE team_invitations SET role = ? WHERE role = ?', to, from)
+      })
+      return changed
+    },
     async changeMemberRole(teamId, userId, role) {
       // The "another admin remains" check is part of the write: SQLite runs the statement under the
       // database write lock, so two connections demoting each other cannot both pass it.

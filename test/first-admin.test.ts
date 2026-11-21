@@ -68,6 +68,7 @@ async function sqlite(): Promise<Db> {
     connection,
     engine: () =>
       createNativeEngine({
+        config: { features: { registration: true, teams: true } },
         baseURL: URL_,
         appKey: APP_KEY,
         trustedProxies: [TEST_PROXY],
@@ -97,6 +98,7 @@ async function postgres(): Promise<Db> {
     connection,
     engine: () =>
       createNativeEngine({
+        config: { features: { registration: true, teams: true } },
         baseURL: URL_,
         appKey: APP_KEY,
         trustedProxies: [TEST_PROXY],

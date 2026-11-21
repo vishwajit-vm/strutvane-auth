@@ -114,6 +114,20 @@ describe('compileRoleMap: definition errors fail the boot', () => {
       /scope/,
     ],
     ['bad newModelDefaults', { newModelDefaults: 'open' }, /newModelDefaults/],
+    ['owner as a platform role', { roles: { owner: { scope: 'global', permissions: [] } } }, /reserved tenant role/],
+    ['owner in both places', { roles: { owner: { scope: 'any', permissions: [] } } }, /reserved tenant role/],
+    ['admin as a tenant role', { roles: { admin: { scope: 'tenant', permissions: [] } } }, /platform role/],
+    ['admin in both places', { roles: { admin: { scope: 'any', permissions: [] } } }, /platform role/],
+    [
+      'a platform role (no scope) with a tenant permission',
+      { roles: { member: { permissions: [{ action: '*.view', scope: 'tenant' }] } } },
+      /set the role's scope to 'any'/,
+    ],
+    [
+      'a tenant role with a platform permission',
+      { roles: { member: { scope: 'tenant', permissions: [{ action: '*.view', scope: 'global' }] } } },
+      /never applies to member, a tenant role/,
+    ],
     ['wildcardExclude not a list', { wildcardExclude: 'user' }, /wildcardExclude must be/],
     ['bad excluded name', { wildcardExclude: ['*'] }, /invalid resource name/],
     [
@@ -142,8 +156,8 @@ describe('compileRoleMap: definition errors fail the boot', () => {
     expect(layer.wildcardExclude).toEqual(['user', 'membership', 'auditEvent'])
     expect(layer.grants.map((g) => g.name)).toEqual([
       'role:admin:*',
-      'role:admin:user.view@global',
-      'role:admin:user.update@global',
+      'role:admin:user.view',
+      'role:admin:user.update',
       'role:member:*.viewAny',
       'role:member:*.view',
       'role:member:*.create',
@@ -348,15 +362,24 @@ describe('role grants combined with policies', () => {
     expect(await can(user(['admin']), 'country.update', 'country', { id: ALICE, name: 'x' })).toBe(
       true,
     )
-    // A tenant member's *.view: tenant data yes, platform data no.
+    // A tenant member of a platform role (no scope = 'global') gets nothing inside the tenant.
     const member = user(['member'], { tenantId: TENANT })
-    expect(await can(member, 'invoice.viewAny')).toBe(true)
+    expect(await can(member, 'invoice.viewAny')).toBe(false)
     expect(await can(member, 'country.viewAny')).toBe(false)
-    // Exact grants are deliberate and are not bounded.
+    // An 'any' role inside a tenant reaches tenant data only, exact grants included.
+    const anyScope = createPermissionProvider([invoicePolicy, countryPolicy], {
+      roles: { roles: { member: { scope: 'any', permissions: ['*.viewAny', 'country.view'] } } },
+    })
+    expect((await anyScope.can(member, 'invoice.viewAny')).allowed).toBe(true)
+    expect((await anyScope.can(member, 'country.viewAny')).allowed).toBe(false)
+    expect((await anyScope.can(member, 'country.view')).allowed).toBe(false)
+    expect((await anyScope.can(user(['member']), 'country.view')).allowed).toBe(true)
+    // An exact grant of a tenant role is deliberate and is not bounded.
     const exact = createPermissionProvider([countryPolicy], {
-      roles: { roles: { member: { permissions: ['country.viewAny'] } } },
+      roles: { roles: { member: { scope: 'tenant', permissions: ['country.viewAny'] } } },
     })
     expect((await exact.can(member, 'country.viewAny')).allowed).toBe(true)
+    expect((await exact.can(user(['member']), 'country.viewAny')).allowed).toBe(false)
   })
 
   it('explain() lists role grants beside policy rules', () => {
@@ -367,7 +390,7 @@ describe('role grants combined with policies', () => {
       record: { status: 'x' },
     })
     expect(v.rules.at(-1)).toMatchObject({
-      rule: { name: 'role:viewer:*.view', effect: 'allow', roles: ['viewer'], scope: 'any' },
+      rule: { name: 'role:viewer:*.view', effect: 'allow', roles: ['viewer'], scope: 'global' },
       outcome: 'covers',
     })
   })

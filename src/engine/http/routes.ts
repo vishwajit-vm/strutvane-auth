@@ -406,6 +406,15 @@ function sameOrigin(request: Request, appUrl: string): boolean {
 export interface AuthHandlerOptions {
   /** Called for every unexpected (non-`AuthError`) failure, with the route path only. */
   readonly onError?: (route: string, error: unknown) => void
+  /**
+   * Features whose routes this handler never serves, even while the feature is on in the config
+   * (their paths get the plain 404). The app provider passes `['teams']` when tenancy is off:
+   * the engine keeps its team services, but no team route is reachable over HTTP.
+   *
+   * @example
+   * createAuthHandler(auth, { withoutFeatures: ['teams'] })
+   */
+  readonly withoutFeatures?: readonly (keyof AuthFeatures)[]
 }
 
 /**
@@ -422,8 +431,9 @@ export function createAuthHandler(
   auth: Auth,
   options: AuthHandlerOptions = {},
 ): (request: Request, info: { readonly ip: string | undefined }) => Promise<Response> {
+  const without = new Set(options.withoutFeatures ?? [])
   const table = routes(auth).filter(
-    (r) => r.feature === undefined || auth.config.features[r.feature],
+    (r) => r.feature === undefined || (auth.config.features[r.feature] && !without.has(r.feature)),
   )
   const secure = auth.config.secureCookies
   return async (request, info) => {

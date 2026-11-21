@@ -160,7 +160,7 @@ describe('teams as tenants: slugs and the personal-team switch', () => {
       const a = await h.signedIn('ada@acme.test')
       expect(await h.auth.teams.list(a.req)).toEqual([])
       const team = await h.auth.teams.create(a.req, { name: 'Acme', slug: 'acme' })
-      expect(team).toMatchObject({ name: 'Acme', slug: 'acme', role: 'admin' })
+      expect(team).toMatchObject({ name: 'Acme', slug: 'acme', role: 'owner' })
       const again = await rejectsWith(
         () => h.auth.teams.create(a.req, { name: 'Other', slug: 'acme' }),
         'validation_failed',

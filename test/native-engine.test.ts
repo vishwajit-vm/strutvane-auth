@@ -32,6 +32,7 @@ const FAST = 2 ** 14 // lower scrypt cost for tests (the minimum the engine acce
 const CONTRACT_CONFIG = {
   lockout: { threshold: 1000 },
   roles: 'admin-manager-member-viewer',
+  features: { registration: true, teams: true },
 } as const
 
 runIdentityContract('native', async (options) => {
@@ -45,6 +46,7 @@ const req = (jar = newJar(), ip = freshIp()) => browserRequest(URL_, { jar, ip }
 describe('native engine specifics', () => {
   it('rotates the session token on tenant switch (the old token stops working)', async () => {
     const engine = createNativeEngine({
+      config: { features: { registration: true, teams: true } },
       baseURL: URL_,
       deliverPasswordReset: async () => undefined,
       scryptCost: FAST,
@@ -73,6 +75,7 @@ describe('native engine specifics', () => {
     let now = Date.now()
     const mailbox = new Mailbox()
     const engine = createNativeEngine({
+      config: { features: { registration: true, teams: true } },
       baseURL: URL_,
       deliverPasswordReset: mailbox.deliver,
       scryptCost: FAST,
@@ -99,6 +102,7 @@ describe('native engine specifics', () => {
   it('a weak new password keeps the reset token usable; the cookie is __Host- prefixed on https', async () => {
     const mailbox = new Mailbox()
     const engine = createNativeEngine({
+      config: { features: { registration: true, teams: true } },
       baseURL: 'https://app.example.com',
       deliverPasswordReset: mailbox.deliver,
       scryptCost: FAST,
@@ -126,6 +130,7 @@ describe('native engine specifics', () => {
     }
     const failing = { increment: down, get: down, set: down, delete: down }
     const engine = createNativeEngine({
+      config: { features: { registration: true, teams: true } },
       baseURL: URL_,
       deliverPasswordReset: async () => {
         throw new Error('mailer down')
@@ -151,6 +156,7 @@ describe('native engine specifics', () => {
     const warnings: unknown[][] = []
     let failAttrs = false
     const engine = createNativeEngine({
+      config: { features: { registration: true, teams: true } },
       logger: { warn: (...args: unknown[]) => void warnings.push(args) },
       baseURL: URL_,
       deliverPasswordReset: async () => {
@@ -196,6 +202,7 @@ describe('native engine specifics', () => {
 
   it('rejects duplicate slugs, bad tenant input and bad roles', async () => {
     const engine = createNativeEngine({
+      config: { features: { registration: true, teams: true } },
       baseURL: URL_,
       deliverPasswordReset: async () => undefined,
       scryptCost: FAST,
@@ -241,6 +248,7 @@ describe('native engine specifics', () => {
 
   it('a proxy chain resolves the real client for rate limiting', async () => {
     const engine = createNativeEngine({
+      config: { features: { registration: true, teams: true } },
       baseURL: URL_,
       deliverPasswordReset: async () => undefined,
       scryptCost: FAST,

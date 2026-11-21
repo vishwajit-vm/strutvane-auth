@@ -240,6 +240,7 @@ describe('rate-limit evasion', () => {
   it('the native engine applies the fallback bucket and logs through the Logger once', async () => {
     const warnings: string[] = []
     const engine = createNativeEngine({
+      config: { features: { registration: true, teams: true } },
       baseURL: 'http://localhost:3000',
       deliverPasswordReset: async () => undefined,
       scryptCost: 2 ** 14,
@@ -575,6 +576,7 @@ describe('password reset links die with the reset', () => {
   it('completing one reset invalidates every other outstanding reset token of that user', async () => {
     const mailbox = new Mailbox()
     const engine = createNativeEngine({
+      config: { features: { registration: true, teams: true } },
       baseURL: 'http://localhost:3000',
       deliverPasswordReset: mailbox.deliver,
       scryptCost: 2 ** 14,

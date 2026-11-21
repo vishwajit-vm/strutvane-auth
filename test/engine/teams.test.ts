@@ -18,16 +18,16 @@ async function invite(
 }
 
 describe.each(STORES)('teams (%s store)', (store) => {
-  it('new users get a personal team as admin; current team is exposed', async () => {
+  it('new users get a personal team as owner; current team is exposed', async () => {
     const h = harness({ store, config })
     await h.user()
     const b = await h.signedIn('ada@acme.test')
     const current = await h.auth.teams.current(b.req)
-    expect(current).toMatchObject({ name: "ada's team", role: 'admin' })
+    expect(current).toMatchObject({ name: "ada's team", role: 'owner' })
     expect((await h.auth.state(b.req))?.team).toEqual(current)
   })
 
-  it('race: two admins demoting (or removing) each other at once never leave a team without an admin', async () => {
+  it('race: two owners demoting (or removing) each other at once never leave a team without an owner', async () => {
     for (const action of ['demote', 'remove'] as const) {
       const h = harness({ store, config })
       const ada = await h.user('ada@acme.test')
@@ -36,7 +36,7 @@ describe.each(STORES)('teams (%s store)', (store) => {
       const team = await h.auth.teams.create(adaB.req, { name: 'Acme' })
       const vicB = await h.signedIn('vic@acme.test')
       await h.auth.teams.accept(vicB.req, {
-        token: await invite(h, adaB, team.id, 'vic@acme.test', 'admin'),
+        token: await invite(h, adaB, team.id, 'vic@acme.test', 'owner'),
       })
       const vic = await h.store.findUserByEmail('vic@acme.test')
       const run = (who: Browser, target: string) =>
@@ -48,8 +48,8 @@ describe.each(STORES)('teams (%s store)', (store) => {
         results.filter((r) => r.status === 'fulfilled'),
         action,
       ).toHaveLength(1)
-      const admins = (await h.store.listMembers(team.id)).filter((m) => m.role === 'admin')
-      expect(admins, action).toHaveLength(1)
+      const owners = (await h.store.listMembers(team.id)).filter((m) => m.role === 'owner')
+      expect(owners, action).toHaveLength(1)
     }
   })
 
@@ -129,7 +129,7 @@ describe.each(STORES)('teams (%s store)', (store) => {
     )
   })
 
-  it('only admins manage; non-members get not_found; roles come from the preset', async () => {
+  it('only owners manage; non-members get not_found; team roles only (never admin)', async () => {
     const h = harness({ store, config })
     for (const e of ['ada', 'vic', 'out']) await h.user(`${e}@acme.test`)
     const ada = await h.signedIn('ada@acme.test')
@@ -155,7 +155,12 @@ describe.each(STORES)('teams (%s store)', (store) => {
     await rejectsWith(() => h.auth.teams.members(outsider.req, { teamId: team.id }), 'not_found')
     await rejectsWith(() => h.auth.teams.switch(outsider.req, { teamId: team.id }), 'not_found')
     await rejectsWith(
-      () => h.auth.teams.invite(ada.req, { teamId: team.id, email: 'x@acme.test', role: 'owner' }),
+      () => h.auth.teams.invite(ada.req, { teamId: team.id, email: 'x@acme.test', role: 'admin' }),
+      'validation_failed',
+    )
+    await rejectsWith(
+      () =>
+        h.auth.teams.changeRole(ada.req, { teamId: team.id, userId: 'x', role: 'admin' }),
       'validation_failed',
     )
     await rejectsWith(
@@ -165,10 +170,10 @@ describe.each(STORES)('teams (%s store)', (store) => {
     )
     expect(
       (await h.auth.teams.members(vic.req, { teamId: team.id })).map((m) => m.role).sort(),
-    ).toEqual(['admin', 'manager'])
+    ).toEqual(['manager', 'owner'])
   })
 
-  it('a team always keeps an admin; removal drops the current team immediately', async () => {
+  it('a team always keeps an owner; removal drops the current team immediately', async () => {
     const h = harness({ store, config })
     await h.user('ada@acme.test')
     await h.user('vic@acme.test')

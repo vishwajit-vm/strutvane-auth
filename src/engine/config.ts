@@ -417,17 +417,6 @@ export function defineAuthConfig(input: AuthConfigInput): AuthConfig {
     throw new TypeError(
       'auth config: features.emailLink needs an https appUrl outside local development',
     )
-  // Every way to sign in hands the browser cookies (the session, the remembered device, the
-  // registration and email-link nonces). Over plain http they lose `__Host-` and `Secure`: anyone
-  // on the path reads them, and a sibling host can plant its own. HTTPS outside local development.
-  if (
-    (features.password || features.emailLink || features.passkeys) &&
-    url.protocol !== 'https:' &&
-    !isLocalHost(url.hostname)
-  )
-    throw new TypeError(
-      'auth config: appUrl must use https outside local development (sign-in cookies need __Host- and Secure); set APP_URL to the public https:// address',
-    )
   if (features.passkeys && input.passkeys === undefined)
     throw new TypeError(
       'auth config: features.passkeys needs a `passkeys: { rpId, rpName, origins }` block',

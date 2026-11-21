@@ -28,8 +28,10 @@
 import { isAbsolute, resolve } from 'node:path'
 import type { Logger } from '@strutvane/framework/contracts'
 import type { AuthConfig } from '../config.ts'
+import { PLATFORM_ADMIN_ROLE, TEAM_OWNER_ROLE } from '../engine/config.ts'
 import type { AuthEventSink } from '../engine/ports/events.ts'
 import type { AuthMailer } from '../engine/ports/mailer.ts'
+import type { AuthStore } from '../engine/ports/store.ts'
 import {
   type FrameworkDatabaseLike,
   frameworkDatabaseClient,
@@ -235,6 +237,20 @@ function requireAppKey(options: AppIdentityOptions): string {
 const MIGRATIONS_HINT =
   "The auth tables (or the auth columns of users) do not exist yet. Run `node strut auth:migration` (it copies @strutvane/auth's migrations into database/migrations), then `node strut migrate`."
 
+/**
+ * Move teams made before the team role was `owner`: their creators (and pending invitations) hold
+ * `admin`, which is now only a platform role and grants nothing inside a team. Idempotent (an
+ * UPDATE of the rows that still say `admin`), so it runs on every boot of a persistent store; it
+ * changes rows, never a table.
+ */
+async function upgradeTeamRoles(store: AuthStore, logger: Logger): Promise<void> {
+  const moved = await store.renameTeamRole(PLATFORM_ADMIN_ROLE, TEAM_OWNER_ROLE)
+  if (moved > 0)
+    logger.info('auth: team memberships and invitations moved from the admin role to owner', {
+      rows: moved,
+    })
+}
+
 type NativeFactory = (extra?: Partial<NativeEngineOptions>) => NativeIdentityEngine
 
 /**
@@ -324,11 +340,9 @@ async function postgresIdentity(
     }
     if (options.verifyTables !== false && (await tablesMissing()))
       throw new IdentitySetupError(MIGRATIONS_HINT)
-    const engine = native({
-      appKey,
-      store: postgresAuthStore(client),
-      counters: postgresCounterStore(client),
-    })
+    const store = postgresAuthStore(client)
+    if (!(await tablesMissing())) await upgradeTeamRoles(store, options.logger)
+    const engine = native({ appKey, store, counters: postgresCounterStore(client) })
     return {
       engine,
       native: engine,
@@ -370,7 +384,9 @@ async function sqliteIdentity(
     if (options.verifyTables !== false && (await tablesMissing()))
       throw new IdentitySetupError(MIGRATIONS_HINT)
     const { sqliteAuthStore, sqliteCounterStore } = await import('../engine/store/sqlite.ts')
-    const engine = native({ appKey, store: sqliteAuthStore(db), counters: sqliteCounterStore(db) })
+    const store = sqliteAuthStore(db)
+    if (!(await tablesMissing())) await upgradeTeamRoles(store, options.logger)
+    const engine = native({ appKey, store, counters: sqliteCounterStore(db) })
     return {
       engine,
       native: engine,

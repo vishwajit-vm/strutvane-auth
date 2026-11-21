@@ -213,6 +213,20 @@ export function memoryAuthStore(): AuthStore {
     async removeMember(teamId, userId) {
       members.delete(mKey(teamId, userId))
     },
+    async renameTeamRole(from, to) {
+      let changed = 0
+      for (const [key, m] of members)
+        if (m.role === from) {
+          members.set(key, { ...m, role: to })
+          changed++
+        }
+      for (const [key, i] of invitations)
+        if (i.role === from) {
+          invitations.set(key, { ...i, role: to })
+          changed++
+        }
+      return changed
+    },
     async changeMemberRole(teamId, userId, role) {
       // Synchronous between the check and the write: atomic within the process.
       const m = members.get(mKey(teamId, userId))

@@ -327,7 +327,8 @@ export function compileRoleMap(config: RoleMapConfig = {}): RoleLayer {
         fail(
           `${at}: '*.${action}' never applies under newModelDefaults 'admin-only'; name the resources (e.g. 'invoice.${action}') or use 'inherit-role-patterns'`,
         )
-      const label = `${resource === '*' && action === '*' ? '*' : `${resource}.${action}`}${own ? '(own)' : ''}${scope === 'any' ? '' : `@${scope}`}`
+      const label = `${resource === '*' && action === '*' ? '*' : `${resource}.${action}`}${own ? '(own)' : ''}${scope === 'global' ? '' : `@${scope}`}`
+      // No suffix means a platform grant (the default scope); `@tenant` and `@any` are spelled out.
       const name = `role:${role}:${label}`
       const info: RoleGrantInfo = Object.freeze({ role, resource, action, own, scope, name })
       compiled.push({

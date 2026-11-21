@@ -260,6 +260,12 @@ export interface AuthStore {
     userId: string,
     role: string | null,
   ): Promise<'ok' | 'not-found' | 'last-admin'>
+  /**
+   * Rename a team role on every membership and pending invitation, in one transaction. Idempotent
+   * (a second call changes nothing); resolves to the number of rows changed. Used to move teams
+   * created before the team role was `owner` (they held `admin`).
+   */
+  renameTeamRole(from: string, to: string): Promise<number>
   addInvitation(invitation: InvitationRecord): Promise<void>
   findInvitationByDigest(digest: string): Promise<InvitationRecord | undefined>
   listInvitations(teamId: string): Promise<readonly InvitationRecord[]>

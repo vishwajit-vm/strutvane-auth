@@ -348,16 +348,16 @@ describe('SQLite across connections (several app processes on one database)', ()
     }
   })
 
-  it('the last-admin guard and the passkey counter are atomic across two connections', async () => {
+  it('the last-owner guard and the passkey counter are atomic across two connections', async () => {
     const file = join(dir, 'guards.sqlite')
     const a = sqliteAuthStore(openFile(file))
     const b = sqliteAuthStore(openFile(file))
     await a.createTeam(
       { id: 't', name: 'T', slug: null, personal: false, createdAt: 1 },
-      { teamId: 't', userId: 'u1', role: 'admin' },
+      { teamId: 't', userId: 'u1', role: 'owner' },
     )
-    await a.putMember({ teamId: 't', userId: 'u2', role: 'admin' })
-    // Each connection removes the OTHER admin: the second must see the first's write.
+    await a.putMember({ teamId: 't', userId: 'u2', role: 'owner' })
+    // Each connection removes the OTHER owner: the second must see the first's write.
     expect(await a.changeMemberRole('t', 'u2', 'member')).toBe('ok')
     expect(await b.changeMemberRole('t', 'u1', null)).toBe('last-admin')
     expect(await b.changeMemberRole('t', 'nobody', null)).toBe('not-found')

@@ -122,6 +122,7 @@ describe('role and privilege tampering', () => {
 
   it('roles can only come from the identity engine: request headers and cookies cannot add them', async () => {
     const engine = createNativeEngine({
+      config: { features: { registration: true, teams: true } },
       baseURL: 'http://localhost',
       deliverPasswordReset: async () => undefined,
       scryptCost: 2 ** 14,
@@ -148,6 +149,7 @@ describe('role and privilege tampering', () => {
 
   it('a tampered actor object (mutating roles after authentication) is impossible: actors are frozen', async () => {
     const engine = createNativeEngine({
+      config: { features: { registration: true, teams: true } },
       baseURL: 'http://localhost',
       deliverPasswordReset: async () => undefined,
       scryptCost: 2 ** 14,
@@ -248,6 +250,7 @@ describe('SQL injection (executed against real Postgres)', () => {
 describe('session fixation', () => {
   it('a session token planted before sign-in is never elevated to the victim’s account', async () => {
     const engine: IdentityEngine = createNativeEngine({
+      config: { features: { registration: true, teams: true } },
       baseURL: 'http://localhost',
       deliverPasswordReset: async () => undefined,
       scryptCost: 2 ** 14,
@@ -294,6 +297,7 @@ describe('cross-tenant access, end to end (engine → middleware → withTenant 
     )
 
     engine = createNativeEngine({
+      config: { features: { registration: true, teams: true } },
       baseURL: 'http://localhost',
       deliverPasswordReset: async () => undefined,
       scryptCost: 2 ** 14,

@@ -260,16 +260,31 @@ describe('engineConfigFrom: config/auth.ts → engine settings', () => {
         {
           registration: true,
           features: { twoFactor: true },
-          roles: { member: { permissions: [] }, viewer: { permissions: [] } },
+          roles: {
+            member: { scope: 'tenant', permissions: [] },
+            viewer: { scope: 'any', permissions: [] },
+          },
           session: { idleMinutes: 30 },
         },
         { tenancy: true, sessionCookie: 'acme_session' },
       ),
     ).toEqual({
       sessionCookie: 'acme_session',
-      features: { twoFactor: true, registration: true, teams: true },
+      features: {
+        password: true,
+        registration: true,
+        emailVerification: false,
+        passwordConfirmation: true,
+        twoFactor: true,
+        passkeys: false,
+        emailLink: false,
+        apiTokens: false,
+        teams: true,
+        impersonation: false,
+      },
       teams: { personal: false },
-      roles: ['admin', 'member', 'viewer'],
+      roles: ['admin', 'viewer'],
+      tenantRoles: ['owner', 'member', 'viewer'],
       sessions: { idleMinutes: 30 },
     })
     expect(
@@ -278,7 +293,18 @@ describe('engineConfigFrom: config/auth.ts → engine settings', () => {
         { tenancy: false },
       ),
     ).toEqual({
-      features: {},
+      features: {
+        password: true,
+        registration: false,
+        emailVerification: false,
+        passwordConfirmation: true,
+        twoFactor: false,
+        passkeys: false,
+        emailLink: false,
+        apiTokens: false,
+        teams: false,
+        impersonation: false,
+      },
       teams: { personal: true },
       roles: 'admin-manager-member-viewer',
     })

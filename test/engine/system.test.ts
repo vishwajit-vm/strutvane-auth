@@ -62,7 +62,7 @@ describe.each(STORES)('system service (%s store)', (store) => {
     const ada = await h.user('ada@acme.test')
     const acme = await h.auth.system.createTeam({ name: 'Acme', slug: 'acme', ownerId: ada.id })
     expect(acme).toMatchObject({ name: 'Acme', slug: 'acme', personal: false })
-    expect(await h.store.findMember(acme.id, ada.id)).toMatchObject({ role: 'admin' })
+    expect(await h.store.findMember(acme.id, ada.id)).toMatchObject({ role: 'owner' })
     expect(h.eventsOf('team.created')).toMatchObject([
       { teamId: acme.id, userId: ada.id, actorId: null },
     ])
@@ -97,16 +97,16 @@ describe.each(STORES)('system service (%s store)', (store) => {
     )
     const roster = await h.auth.system.listMembers(team.id)
     expect(roster.map((m) => [m.user.email, m.member.role]).sort()).toEqual([
-      ['ada@acme.test', 'admin'],
+      ['ada@acme.test', 'owner'],
       ['bob@acme.test', 'member'],
     ])
-    // The only admin can be neither demoted nor removed…
+    // The only owner can be neither demoted nor removed…
     expect(await h.auth.system.setMember({ teamId: team.id, userId: ada.id, role: 'member' })).toBe(
       'last-admin',
     )
     expect(await h.auth.system.removeMember({ teamId: team.id, userId: ada.id })).toBe('last-admin')
     // …until there is another one.
-    expect(await h.auth.system.setMember({ teamId: team.id, userId: bob.id, role: 'admin' })).toBe(
+    expect(await h.auth.system.setMember({ teamId: team.id, userId: bob.id, role: 'owner' })).toBe(
       'ok',
     )
     expect(await h.auth.system.removeMember({ teamId: team.id, userId: ada.id })).toBe('ok')
@@ -118,7 +118,7 @@ describe.each(STORES)('system service (%s store)', (store) => {
       await h.auth.system.setMember({ teamId: team.id, userId: 'nobody', role: 'member' }),
     ).toBe('not-found')
     await rejectsWith(
-      () => h.auth.system.setMember({ teamId: team.id, userId: bob.id, role: 'owner' }),
+      () => h.auth.system.setMember({ teamId: team.id, userId: bob.id, role: 'admin' }),
       'validation_failed',
     )
     expect(await h.auth.system.listMembers('nope')).toEqual([])
@@ -127,7 +127,7 @@ describe.each(STORES)('system service (%s store)', (store) => {
     ).toEqual([
       ['bob', 'viewer'],
       ['bob', 'member'],
-      ['bob', 'admin'],
+      ['bob', 'owner'],
       ['ada', null],
     ])
   })

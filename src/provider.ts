@@ -86,7 +86,7 @@ import { engineConfigFrom } from './identity/engine-config.ts'
 import { authenticateRequest, problemResponse } from './middleware/core.ts'
 import type { Policy } from './policy/policy.ts'
 import { createPermissionProvider, type StrutvanePermissionProvider } from './policy/provider.ts'
-import { compileRoleMap } from './policy/roles.ts'
+import { compileRoleMap, partitionRoles } from './policy/roles.ts'
 import { headerResolver, sessionResolver } from './tenancy/resolver.ts'
 import { AuthMailerToken } from './tokens.ts'
 
@@ -266,7 +266,7 @@ async function handleMembers(
   deps: {
     readonly engine: IdentityEngine
     readonly roles: readonly string[]
-    /** The role that manages a tenant: `admin` (native) or `owner` (Better Auth). */
+    /** The role that manages a tenant: `owner` (reserved; never a platform role). */
     readonly ownerRole: string
   },
 ): Promise<Response> {
@@ -471,6 +471,9 @@ export function createAuthProvider(): Provider {
       const proxies = trustedProxies(cfg.trustedProxies)
       const engineHandler = identity.native
         ? createAuthHandler(identity.native.auth, {
+            // Team routes exist only with tenancy on, like TENANT_ROUTES: otherwise any signed-in
+            // user could create a team and hold its owner role in an app that never scopes by it.
+            withoutFeatures: tenancyOn ? [] : ['teams'],
             onError: (route, error) =>
               logger.error('auth route failure', {
                 route,
@@ -534,10 +537,11 @@ export function createAuthProvider(): Provider {
                 return answer(
                   await handleMembers(p.request, members[1] ?? '', members[2], {
                     engine: native,
+                    // Tenant roles only: a platform role is never given inside a tenant.
                     roles: identity?.native
-                      ? identity.native.auth.config.roles
+                      ? identity.native.auth.config.tenantRoles
                       : cfg.roles
-                        ? Object.keys(cfg.roles)
+                        ? partitionRoles(cfg.roles).tenant
                         : BETTER_AUTH_TENANT_ROLES,
                     ownerRole: identity?.native ? identity.native.ownerRole : 'owner',
                   }),
