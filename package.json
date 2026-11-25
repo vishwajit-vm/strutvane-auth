@@ -1,6 +1,6 @@
 {
   "name": "@strutvane/auth",
-  "version": "0.2.0-next.1",
+  "version": "0.2.0-next.2",
   "description": "Enterprise authentication and authorization for TypeScript apps: policies compiled to SQL, multi-tenancy with Postgres RLS, hardened identity adapters, audit events and framework-agnostic middleware.",
   "keywords": [
     "strutvane",
