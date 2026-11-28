@@ -110,7 +110,7 @@
   },
   "peerDependencies": {
     "@strutvane/framework": "^0.2.0-next.0",
-    "better-auth": "1.7.23",
+    "better-auth": "1.7.28",
     "hono": "^4.13.0",
     "pg": "^8.23.0",
     "vitest": "^5.1.0"
@@ -130,20 +130,20 @@
     }
   },
   "devDependencies": {
-    "@biomejs/biome": "2.6.7",
+    "@biomejs/biome": "2.6.9",
     "@changesets/cli": "3.0.3",
-    "@electric-sql/pglite": "0.5.16",
+    "@electric-sql/pglite": "0.6.0",
     "@strutvane/framework": "0.2.0-next.1",
     "@types/node": "24.19.2",
     "@types/pg": "8.23.1",
-    "@vitest/coverage-v8": "5.1.0",
-    "better-auth": "1.7.23",
-    "fast-check": "4.10.2",
-    "hono": "4.13.18",
+    "@vitest/coverage-v8": "5.1.2",
+    "better-auth": "1.7.28",
+    "fast-check": "4.11.0",
+    "hono": "4.13.22",
     "pg": "8.23.1",
     "tsdown": "0.23.7",
     "typescript": "6.0.3",
-    "vitest": "5.1.0"
+    "vitest": "5.1.2"
   },
   "allowScripts": {
     "esbuild@0.18.20": true,
